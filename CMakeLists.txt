@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(LocalAudio VERSION 2.5.0 LANGUAGES C CXX)
+project(LocalAudio VERSION 2.5.4 LANGUAGES C CXX)
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Windows x64 is required")
 endif()

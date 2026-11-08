@@ -45,7 +45,7 @@ Json Bootstrap(){
     if(connected&&api.getClientID)api.getClientID(handler,&self);
     if(connected&&self&&api.getChannelOfClient)api.getChannelOfClient(handler,self,&channel);
     connected=connected&&self&&channel;
-    return {{"type","bootstrap"},{"version","2.5.0"},{"features",{"music","ai-denoise"}},{"connected",connected},{"selfID",self},{"handler",handler},{"channelID",channel},{"audioSettings",AudioSettings()}};
+    return {{"type","bootstrap"},{"version","2.5.4"},{"features",{"music","ai-denoise"}},{"connected",connected},{"selfID",self},{"handler",handler},{"channelID",channel},{"audioSettings",AudioSettings()}};
 }
 bool Changed(std::string& previous,const Json& value){std::lock_guard<std::mutex> lock(bridgeMutex);auto text=value.dump();if(text==previous)return false;previous=std::move(text);return true;}
 }

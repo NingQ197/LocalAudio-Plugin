@@ -79,7 +79,7 @@ const char* ts3plugin_name()
 
 const char* ts3plugin_version()
 {
-    return "2.5.0";
+    return "2.5.4";
 }
 
 int ts3plugin_apiVersion()
@@ -335,17 +335,40 @@ void ts3plugin_currentServerConnectionChanged(uint64 handler)
 
 void ts3plugin_onConnectStatusChangeEvent(uint64 handler, int status, unsigned int /*error*/)
 {
-    if (status == STATUS_DISCONNECTED)
+    const uint64 current=ts3Functions.getCurrentServerConnectionHandlerID?ts3Functions.getCurrentServerConnectionHandlerID():0;
+    if (status == STATUS_DISCONNECTED && (!current || current==handler))
         la::TS3ScreenCurrentHandlerChange(handler);
+}
+
+static void NotifyMembershipChange(uint64 handler,anyID client)
+{
+    if(!client || !ts3Functions.getCurrentServerConnectionHandlerID ||
+       ts3Functions.getCurrentServerConnectionHandlerID()!=handler)return;
+    anyID self=0;
+    if(ts3Functions.getClientID&&ts3Functions.getClientID(handler,&self)==ERROR_ok&&self==client){
+        la::TS3ScreenCurrentHandlerChange(handler);return;
+    }
+    la::TS3ScreenPeerMembershipChanged(handler,client);
 }
 
 void ts3plugin_onClientMoveEvent(uint64 handler, anyID client, uint64 /*oldChannel*/, uint64 /*newChannel*/,
                                int /*visibility*/, const char* /*message*/)
 {
-    anyID self = 0;
-    if (ts3Functions.getClientID && ts3Functions.getClientID(handler, &self) == ERROR_ok && self == client)
-        la::TS3ScreenCurrentHandlerChange(handler);
+    NotifyMembershipChange(handler,client);
 }
+
+void ts3plugin_onClientMoveSubscriptionEvent(uint64 handler,anyID client,uint64,uint64,int)
+{NotifyMembershipChange(handler,client);}
+void ts3plugin_onClientMoveTimeoutEvent(uint64 handler,anyID client,uint64,uint64,int,const char*)
+{NotifyMembershipChange(handler,client);}
+void ts3plugin_onClientMoveMovedEvent(uint64 handler,anyID client,uint64,uint64,int,anyID,const char*,const char*,const char*)
+{NotifyMembershipChange(handler,client);}
+void ts3plugin_onClientKickFromChannelEvent(uint64 handler,anyID client,uint64,uint64,int,anyID,const char*,const char*,const char*)
+{NotifyMembershipChange(handler,client);}
+void ts3plugin_onClientKickFromServerEvent(uint64 handler,anyID client,uint64,uint64,int,anyID,const char*,const char*,const char*)
+{NotifyMembershipChange(handler,client);}
+void ts3plugin_onClientBanFromServerEvent(uint64 handler,anyID client,uint64,uint64,int,anyID,const char*,const char*,uint64,const char*)
+{NotifyMembershipChange(handler,client);}
 
 /*********************************** 核心：把应用声音混进麦克风 ************************************/
 

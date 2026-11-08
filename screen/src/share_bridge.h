@@ -8,6 +8,7 @@ void TS3ScreenInitialize(const TS3Functions& api, const char* pluginID, const st
 void TS3ScreenSetPluginID(const char* pluginID);
 void TS3ScreenShutdown();
 void TS3ScreenCurrentHandlerChange(uint64 handler);
+void TS3ScreenPeerMembershipChanged(uint64 handler, anyID client);
 void TS3ScreenOnPluginCommand(uint64 handler, const char* pluginName, const char* command,
                              anyID invoker, const char* invokerName, const char* invokerUid);
 void ShareBridgeSetEmitter(ShareJsonEmitter emitter);

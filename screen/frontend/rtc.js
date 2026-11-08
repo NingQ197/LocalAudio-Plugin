@@ -4,6 +4,9 @@ const KINDS = new Set(['discover','hostannounce','stop','viewrequest','approve',
 const uuid=()=>crypto.randomUUID();
 const keyOf=value=>String(value??'');
 const validID=value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{8,80}$/.test(value);
+const validUID=value=>typeof value==='string'&&value.length>0&&value.length<=256&&!/[\x00-\x20\x7f]/.test(value);
+const MAX_ICE_BYTES=256*1024,MAX_ICE_CANDIDATES=128,MAX_PENDING_JOBS=16,HANDSHAKE_TIMEOUT=30000;
+const utf8=new TextEncoder();
 const urls=value=>Array.isArray(value)?value.map(String).filter(Boolean):String(value||'').split(/[\s,]+/).filter(Boolean);
 export function normalizeNetwork(raw={}) {
   const out={...DEFAULT_NETWORK,...raw};
@@ -34,11 +37,12 @@ export function peerConfiguration(raw) {
 export class ShareSession extends EventTarget {
   constructor({send,broadcast,configuration=()=>DEFAULT_NETWORK,peerFactory=c=>new RTCPeerConnection(c),now=()=>Date.now()}={}) {
     super();this.sendNative=send;this.broadcastNative=broadcast;this.configuration=configuration;this.peerFactory=peerFactory;this.now=now;
-    this.context={selfID:0,handler:0,channelID:0,peers:[]};this.host=null;this.view=null;this.hosts=new Map();this.requests=new Map();this.connections=new Map();this.disposed=false;this.lastDiscover=0;
+    this.context={selfID:0,handler:0,channelID:0,peers:[]};this.host=null;this.view=null;this.hosts=new Map();this.requests=new Map();this.connections=new Map();this.joinCooldowns=new Map();this.disposed=false;this.lastDiscover=0;
     this.heartbeat=setInterval(()=>this.maintain(),5000);this.statsTimer=setInterval(()=>this.collectStats(),2000);
   }
   emit(type,detail={}) {this.dispatchEvent(new CustomEvent(type,{detail}));}
-  known(id) {return this.context.peers.some(p=>keyOf(p.id)===keyOf(id))&&keyOf(id)!==keyOf(this.context.selfID);}
+  peerUID(id) {const uid=this.context.peers.find(p=>keyOf(p.id)===keyOf(id))?.uid;return validUID(uid)?uid:null;}
+  known(id) {return keyOf(id)!==keyOf(this.context.selfID)&&Boolean(this.peerUID(id));}
   connected() {return Boolean(this.context.handler&&this.context.channelID&&this.context.selfID);}
   envelope(kind,sessionID,extra={}) {return {v:1,kind,sessionID,channelID:this.context.channelID,...extra};}
   send(to,kind,sessionID,extra={}) {if(this.known(to))this.sendNative?.(to,this.envelope(kind,sessionID,extra));}
@@ -47,12 +51,19 @@ export class ShareSession extends EventTarget {
     const changed=this.context.handler&&(keyOf(next.handler)!==keyOf(this.context.handler)||keyOf(next.channelID)!==keyOf(this.context.channelID)||keyOf(next.selfID)!==keyOf(this.context.selfID));
     if(changed){this.stopHost('频道已切换');this.stopViewing('频道已切换');this.hosts.clear();}
     this.context={...this.context,...next,peers:Array.isArray(next.peers)?next.peers:[]};
-    for(const [id] of this.connections)if(!this.known(id))this.removeConnection(id,'成员已离开频道');
-    for(const [id] of this.requests)if(!this.known(id))this.requests.delete(id);
-    for(const [id] of this.hosts)if(!this.known(id))this.hosts.delete(id);
-    if(this.view&&!this.known(this.view.hostID))this.stopViewing('分享者已离开频道');
+    for(const [id,r] of this.connections)if(!this.known(id)||this.peerUID(id)!==r.peerUID)this.removeConnection(id,'成员身份已改变或离开频道');
+    for(const [id,r] of this.requests)if(!this.known(id)||this.peerUID(id)!==r.peerUID)this.requests.delete(id);
+    for(const [id,h] of this.hosts)if(!this.known(id)||this.peerUID(id)!==h.peerUID)this.hosts.delete(id);
+    if(this.view&&(!this.known(this.view.hostID)||this.peerUID(this.view.hostID)!==this.view.peerUID))this.stopViewing('分享者身份已改变或离开频道');
     this.emit('hosts',{hosts:this.availableHosts()});this.emitRequests();
     if(this.connected()&&this.now()-this.lastDiscover>5000){this.lastDiscover=this.now();this.broadcast('discover',uuid());}
+  }
+  revokePeer(id,handler,channelID) {
+    id=keyOf(id);if(this.disposed||keyOf(handler)!==keyOf(this.context.handler)||keyOf(channelID)!==keyOf(this.context.channelID)||id===keyOf(this.context.selfID))return false;
+    this.context.peers=this.context.peers.filter(p=>keyOf(p.id)!==id);
+    this.hosts.delete(id);this.requests.delete(id);this.removeConnection(id,'成员已离开频道');
+    if(this.view?.hostID===id)this.stopViewing('分享者已离开频道',false);
+    this.emit('hosts',{hosts:this.availableHosts()});this.emitRequests();return true;
   }
   availableHosts(){return [...this.hosts.values()].sort((a,b)=>a.name.localeCompare(b.name));}
   announcement(){if(!this.host)return {};const s=this.host.settings;return {title:'屏幕共享',settings:{width:s.width||0,height:s.height||0,frameRate:s.frameRate||0},audio:this.host.audio,startedAt:this.host.startedAt};}
@@ -70,7 +81,7 @@ export class ShareSession extends EventTarget {
     if(!this.host)return;const old=this.host;this.host=null;
     this.broadcast('stop',old.sessionID,{reason});
     for(const [id,r]of [...this.connections])if(r.role==='host')this.removeConnection(id,reason);
-    this.requests.clear();for(const track of old.stream.getTracks())track.stop();
+    this.requests.clear();this.joinCooldowns.clear();for(const track of old.stream.getTracks())track.stop();
     this.emitRequests();this.emit('hoststop',{reason});
   }
   requestView(hostID,sessionID) {
@@ -78,7 +89,7 @@ export class ShareSession extends EventTarget {
     if(this.host)throw Error('请先停止自己的屏幕共享。');
     const host=this.hosts.get(keyOf(hostID));if(!host||host.sessionID!==sessionID||!this.known(hostID))throw Error('这次分享已结束，请刷新列表。');
     peerConfiguration(this.configuration());this.stopViewing();
-    this.view={hostID:keyOf(hostID),sessionID,requestID:uuid(),token:null,requestedAt:this.now(),approved:false};
+    this.view={hostID:keyOf(hostID),peerUID:this.peerUID(hostID),sessionID,requestID:uuid(),token:null,requestedAt:this.now(),approved:false};
     this.send(hostID,'viewrequest',sessionID,{requestID:this.view.requestID});this.emit('viewstate',{state:'requested',host});
   }
   approve(id) {
@@ -95,19 +106,24 @@ export class ShareSession extends EventTarget {
   }
   emitRequests(){this.emit('requests',{requests:[...this.requests.values()],viewers:[...this.connections.values()].filter(r=>r.role==='host').map(r=>({id:r.id,name:r.name,state:r.pc?.connectionState||'正在连接'}))});}
   makeRecord(id,role,sessionID,requestID,token) {
-    const r={id:keyOf(id),name:this.context.peers.find(p=>keyOf(p.id)===keyOf(id))?.name||`成员 ${id}`,role,sessionID,requestID,token,pc:null,queue:Promise.resolve(),ice:new Map(),negotiationID:null,createdAt:this.now(),restartAttempts:0,remoteStream:null,lastStats:null,disconnectedAt:0};
+    const r={id:keyOf(id),peerUID:this.peerUID(id),name:this.context.peers.find(p=>keyOf(p.id)===keyOf(id))?.name||`成员 ${id}`,role,sessionID,requestID,token,pc:null,queue:Promise.resolve(),pendingJobs:0,ice:new Map(),iceMeta:new Map(),iceBytes:0,iceCount:0,iceFlushPending:false,negotiationID:null,pendingNegotiationID:null,retiredNegotiations:[],remoteOfferPending:false,negotiationDeadline:0,createdAt:this.now(),lastApproveSent:this.now(),lastAckSent:null,connectedOnce:false,restartAttempts:0,remoteStream:null,lastStats:null,disconnectedAt:0};
     this.connections.set(r.id,r);return r;
   }
-  active(r){return !this.disposed&&this.connections.get(r.id)===r&&((r.role==='host'&&this.host?.sessionID===r.sessionID)||(r.role==='viewer'&&this.view?.sessionID===r.sessionID&&this.view?.token===r.token));}
+  active(r){return !this.disposed&&this.connections.get(r.id)===r&&validUID(r.peerUID)&&this.peerUID(r.id)===r.peerUID&&((r.role==='host'&&this.host?.sessionID===r.sessionID)||(r.role==='viewer'&&this.view?.sessionID===r.sessionID&&this.view?.token===r.token));}
   authorised(r,p){return r&&p.sessionID===r.sessionID&&p.requestID===r.requestID&&p.token===r.token;}
-  serialize(r,job){r.queue=r.queue.then(async()=>{if(this.active(r))await job();}).catch(e=>{if(this.active(r))this.emit('error',{message:`与 ${r.name} 协商失败：${e.message}`});});return r.queue;}
+  serialize(r,job){
+    if(!this.active(r))return Promise.resolve(false);
+    if(r.pendingJobs>=MAX_PENDING_JOBS){this.sendWith(r,'leave');this.removeConnection(r.id,'控制消息过多，请重新连接');return Promise.resolve(false);}
+    r.pendingJobs++;
+    r.queue=r.queue.then(async()=>{if(this.active(r)){await job();return true;}return false;}).catch(e=>{if(this.active(r))this.emit('error',{message:`与 ${r.name} 协商失败：${e.message}`});return false;}).finally(()=>{r.pendingJobs=Math.max(0,r.pendingJobs-1);});return r.queue;
+  }
   createPeer(r) {
     if(r.pc)return r.pc;
     const pc=this.peerFactory(peerConfiguration(this.configuration()));r.pc=pc;
     pc.onicecandidate=event=>{if(this.active(r)&&r.negotiationID)this.send(r.id,'ice',r.sessionID,{requestID:r.requestID,token:r.token,negotiationID:r.negotiationID,candidate:event.candidate?.toJSON?.()??event.candidate??null});};
     pc.onconnectionstatechange=()=>{
       if(!this.active(r))return;const state=pc.connectionState;
-      if(state==='connected'){r.disconnectedAt=0;r.restartAttempts=0;}
+      if(state==='connected'){r.disconnectedAt=0;r.restartAttempts=0;r.connectedOnce=true;this.joinCooldowns.delete(r.peerUID);}
       if(state==='disconnected')r.disconnectedAt=this.now();
       if(state==='failed')this.restart(r.id);
       this.emit('connection',{id:r.id,name:r.name,role:r.role,state});this.emitRequests();
@@ -125,7 +141,7 @@ export class ShareSession extends EventTarget {
   async offer(r,restart=false) {
     if(!this.active(r))return;const pc=this.createPeer(r);
     if(pc.signalingState!=='stable')return;
-    r.negotiationID=uuid();
+    this.setNegotiation(r,uuid());r.negotiationDeadline=this.now()+HANDSHAKE_TIMEOUT;
     const offer=await pc.createOffer(restart?{iceRestart:true}:{});if(!this.active(r))return;
     await pc.setLocalDescription(offer);if(!this.active(r))return;
     await this.applyVideoLimits(r);if(!this.active(r))return;
@@ -148,25 +164,52 @@ export class ShareSession extends EventTarget {
     if(!this.host)return;this.host.quality={height:Math.max(0,Number(quality.height)||0),frameRate:Math.min(60,Math.max(5,Number(quality.frameRate)||30))};
     await Promise.all([...this.connections.values()].filter(r=>r.role==='host').map(r=>this.serialize(r,()=>this.applyVideoLimits(r))));
   }
+  discardIce(r,id) {const meta=r.iceMeta.get(id);if(meta){r.iceBytes=Math.max(0,r.iceBytes-meta.bytes);r.iceCount=Math.max(0,r.iceCount-meta.count);}r.ice.delete(id);r.iceMeta.delete(id);if(r.pendingNegotiationID===id)r.pendingNegotiationID=null;}
+  setNegotiation(r,id) {
+    if(r.negotiationID&&r.negotiationID!==id){r.retiredNegotiations.push(r.negotiationID);if(r.retiredNegotiations.length>8)r.retiredNegotiations.shift();}
+    r.negotiationID=id;r.pendingNegotiationID=null;
+    for(const key of [...r.ice.keys()])if(key!==id)this.discardIce(r,key);
+  }
   queueIce(r,p) {
-    if(!validID(p.negotiationID))return;
-    if(p.candidate!==null&&(typeof p.candidate!=='object'||typeof p.candidate.candidate!=='string'||p.candidate.candidate.length>4096))return;
-    if(!r.ice.has(p.negotiationID)){if(r.ice.size>=3)r.ice.delete(r.ice.keys().next().value);r.ice.set(p.negotiationID,[]);}
-    const queued=r.ice.get(p.negotiationID);if(queued.length<128)queued.push(p.candidate);
+    const id=p.negotiationID;if(!validID(id)||r.retiredNegotiations.includes(id))return false;
+    if(id!==r.negotiationID){if(r.role!=='viewer'||(r.pendingNegotiationID&&r.pendingNegotiationID!==id))return false;}
+    let clean=null;
+    if(p.candidate!==null){
+      const c=p.candidate;if(!c||typeof c!=='object'||Array.isArray(c)||typeof c.candidate!=='string'||c.candidate.length>4096)return false;
+      clean={candidate:c.candidate};
+      for(const [key,limit]of [['sdpMid',128],['usernameFragment',256]])if(c[key]!==undefined){if(c[key]!==null&&(typeof c[key]!=='string'||c[key].length>limit||/[\x00-\x1f\x7f]/.test(c[key])))return false;clean[key]=c[key];}
+      if(c.sdpMLineIndex!==undefined){if(c.sdpMLineIndex!==null&&(!Number.isInteger(c.sdpMLineIndex)||c.sdpMLineIndex<0||c.sdpMLineIndex>65535))return false;clean.sdpMLineIndex=c.sdpMLineIndex;}
+    }
+    const bytes=utf8.encode(JSON.stringify(clean)).byteLength;
+    if(r.iceCount>=MAX_ICE_CANDIDATES||r.iceBytes+bytes>MAX_ICE_BYTES)return false;
+    if(id!==r.negotiationID)r.pendingNegotiationID=id;
+    if(!r.ice.has(id)){r.ice.set(id,[]);r.iceMeta.set(id,{createdAt:this.now(),bytes:0,count:0});}
+    const meta=r.iceMeta.get(id);r.ice.get(id).push(clean);meta.bytes+=bytes;meta.count++;r.iceBytes+=bytes;r.iceCount++;return true;
   }
   async flushIce(r) {
     if(!r.pc?.remoteDescription||!r.negotiationID)return;
-    const list=r.ice.get(r.negotiationID)||[];r.ice.delete(r.negotiationID);
+    const list=r.ice.get(r.negotiationID)||[];this.discardIce(r,r.negotiationID);
     for(const candidate of list){if(!this.active(r))return;try{await r.pc.addIceCandidate(candidate);}catch(e){this.emit('notice',{message:`部分网络候选已过期：${e.message}`});}}
   }
-  async handleSignal({from,name,payload:p}) {
+  async handleSignal({from,fromUid,name,payload:p,nativePeerRevoked,handler,channelID}) {
     from=keyOf(from);
-    if(p?.kind==='peer-leave'&&this.known(from)&&keyOf(p.channelID)===keyOf(this.context.channelID)){this.hosts.delete(from);this.requests.delete(from);this.removeConnection(from,'对方已关闭共享窗口');if(this.view?.hostID===from)this.stopViewing('分享者已关闭窗口',false);this.emit('hosts',{hosts:this.availableHosts()});return true;}
+    // This outer metadata is emitted only by a local TS SDK membership event.
+    // Remote wire data is nested under payload and cannot set this flag.
+    if(nativePeerRevoked===true)return this.revokePeer(from,handler,channelID);
+    if(keyOf(handler)!==keyOf(this.context.handler)||keyOf(channelID)!==keyOf(this.context.channelID))return false;
+    if(!validUID(fromUid)||this.peerUID(from)!==fromUid)return false;
     if(this.disposed||!this.connected()||!this.known(from)||!p||typeof p!=='object'||p.v!==1||!KINDS.has(p.kind)||!validID(p.sessionID)||keyOf(p.channelID)!==keyOf(this.context.channelID))return false;
+    if(p.kind==='peer-leave'){
+      if(this.hosts.get(from)?.sessionID===p.sessionID)this.hosts.delete(from);
+      if(this.connections.get(from)?.sessionID===p.sessionID)this.removeConnection(from,'对方已关闭共享窗口');
+      if(this.requests.get(from)?.sessionID===p.sessionID)this.requests.delete(from);
+      if(this.view?.hostID===from&&this.view.sessionID===p.sessionID)this.stopViewing('分享者已关闭窗口',false);
+      this.emit('hosts',{hosts:this.availableHosts()});this.emitRequests();return true;
+    }
     if(p.kind==='discover'){if(this.host)this.send(from,'hostannounce',this.host.sessionID,this.announcement());return true;}
     if(p.kind==='hostannounce'){
       if(this.host?.sessionID===p.sessionID)return false;
-      this.hosts.set(from,{id:from,name:String(name||this.context.peers.find(x=>keyOf(x.id)===from)?.name||`成员 ${from}`),sessionID:p.sessionID,title:String(p.title||'屏幕共享').slice(0,100),settings:p.settings&&typeof p.settings==='object'?p.settings:{},audio:Boolean(p.audio),seenAt:this.now()});
+      this.hosts.set(from,{id:from,peerUID:fromUid,name:String(name||this.context.peers.find(x=>keyOf(x.id)===from)?.name||`成员 ${from}`),sessionID:p.sessionID,title:String(p.title||'屏幕共享').slice(0,100),settings:p.settings&&typeof p.settings==='object'?p.settings:{},audio:Boolean(p.audio),seenAt:this.now()});
       this.emit('hosts',{hosts:this.availableHosts()});return true;
     }
     if(p.kind==='stop'){
@@ -176,10 +219,12 @@ export class ShareSession extends EventTarget {
     }
     if(p.kind==='viewrequest') {
       if(!this.host||p.sessionID!==this.host.sessionID||!validID(p.requestID))return false;
-      const current=this.connections.get(from);if(current&&current.requestID===p.requestID){this.sendWith(current,'approve');return true;}
+      const current=this.connections.get(from);if(current&&current.requestID===p.requestID){if(this.now()-current.lastApproveSent>=1000){current.lastApproveSent=this.now();this.sendWith(current,'approve');}return true;}
+      if(current){this.send(from,'deny',p.sessionID,{requestID:p.requestID,reason:'已有观看连接，请先停止后再重新连接'});return false;}
+      if((this.joinCooldowns.get(fromUid)||0)>this.now()){this.send(from,'deny',p.sessionID,{requestID:p.requestID,reason:'连接失败，请稍后重试'});return false;}
       // Joining is automatic for authenticated members of this TS channel.
       // Keep the token/ack handshake so media still belongs to this exact join.
-      this.requests.set(from,{id:from,name:String(name||`成员 ${from}`),requestID:p.requestID,receivedAt:this.now()});
+      this.requests.set(from,{id:from,peerUID:fromUid,sessionID:p.sessionID,name:String(name||`成员 ${from}`),requestID:p.requestID,receivedAt:this.now()});
       try{this.approve(from);}catch(error){this.deny(from,error.message);}
       return true;
     }
@@ -191,6 +236,7 @@ export class ShareSession extends EventTarget {
       if(v.approved&&v.token!==p.token)return false;
       v.approved=true;v.token=p.token;
       let r=this.connections.get(from);if(!r)r=this.makeRecord(from,'viewer',v.sessionID,v.requestID,v.token);
+      if(r.lastAckSent!==null&&this.now()-r.lastAckSent<1000)return true;r.lastAckSent=this.now();
       this.sendWith(r,'approveack');this.emit('viewstate',{state:'approved',host:this.hosts.get(from)});return true;
     }
     const r=this.connections.get(from);if(!this.authorised(r,p)||!this.active(r)){
@@ -201,21 +247,25 @@ export class ShareSession extends EventTarget {
     if(p.kind==='approveack'&&r.role==='host') {if(!r.pc)await this.serialize(r,()=>this.offer(r));return true;}
     if(p.kind==='restart'){if(r.role==='host')this.restart(from);return true;}
     if(p.kind==='ice') {
-      this.queueIce(r,p);await this.serialize(r,()=>this.flushIce(r));return true;
+      if(!this.queueIce(r,p))return false;
+      if(!r.iceFlushPending){r.iceFlushPending=true;try{await this.serialize(r,()=>this.flushIce(r));}finally{r.iceFlushPending=false;}}return true;
     }
     if(p.kind==='offer'&&r.role==='viewer') {
-      if(!validID(p.negotiationID)||p.description?.type!=='offer'||typeof p.description.sdp!=='string'||p.description.sdp.length>262144)return false;
-      await this.serialize(r,async()=>{
-        const pc=this.createPeer(r);r.negotiationID=p.negotiationID;
+      if(!validID(p.negotiationID)||p.description?.type!=='offer'||typeof p.description.sdp!=='string'||p.description.sdp.length>262144||r.retiredNegotiations.includes(p.negotiationID)||r.remoteOfferPending)return false;
+      if(r.negotiationID===p.negotiationID&&r.pc?.remoteDescription)return false;
+      r.remoteOfferPending=true;this.setNegotiation(r,p.negotiationID);r.negotiationDeadline=this.now()+HANDSHAKE_TIMEOUT;
+      try{await this.serialize(r,async()=>{
+        const pc=this.createPeer(r);
         await pc.setRemoteDescription(p.description);if(!this.active(r))return;
         await this.flushIce(r);const answer=await pc.createAnswer();if(!this.active(r))return;
         await pc.setLocalDescription(answer);if(!this.active(r))return;
         this.sendWith(r,'answer',{negotiationID:r.negotiationID,description:pc.localDescription.toJSON?.()??{type:pc.localDescription.type,sdp:pc.localDescription.sdp}});
-      });return true;
+        r.negotiationDeadline=0;
+      });}finally{r.remoteOfferPending=false;}return true;
     }
     if(p.kind==='answer'&&r.role==='host') {
       if(p.negotiationID!==r.negotiationID||p.description?.type!=='answer'||typeof p.description.sdp!=='string'||p.description.sdp.length>262144)return false;
-      await this.serialize(r,async()=>{if(r.pc?.signalingState!=='have-local-offer')return;await r.pc.setRemoteDescription(p.description);await this.flushIce(r);});return true;
+      await this.serialize(r,async()=>{if(r.pc?.signalingState!=='have-local-offer')return;await r.pc.setRemoteDescription(p.description);await this.flushIce(r);if(this.active(r))r.negotiationDeadline=0;});return true;
     }
     return false;
   }
@@ -228,7 +278,7 @@ export class ShareSession extends EventTarget {
   removeConnection(id,reason='已断开') {
     id=keyOf(id);const r=this.connections.get(id);if(!r)return;this.connections.delete(id);
     if(r.pc){r.pc.onicecandidate=null;r.pc.ontrack=null;r.pc.onconnectionstatechange=null;r.pc.close();}
-    for(const t of r.remoteStream?.getTracks()||[])t.stop();r.ice.clear();
+    for(const t of r.remoteStream?.getTracks()||[])t.stop();r.ice.clear();r.iceMeta.clear();r.iceBytes=0;r.iceCount=0;
     if(r.role==='viewer'&&this.view?.hostID===id){this.view=null;this.emit('viewstop',{reason});}
     this.emitRequests();this.emit('connection',{id,role:r.role,state:'closed',reason});
   }
@@ -240,11 +290,16 @@ export class ShareSession extends EventTarget {
   }
   maintain() {
     if(this.disposed)return;const now=this.now();
+    for(const [uid,until]of this.joinCooldowns)if(now>=until)this.joinCooldowns.delete(uid);
     if(this.host)this.broadcast('hostannounce',this.host.sessionID,this.announcement());
     for(const[id,h]of this.hosts)if(now-h.seenAt>17000)this.hosts.delete(id);
     for(const[id,r]of this.requests)if(now-r.receivedAt>60000)this.requests.delete(id);
     for(const[id,r]of [...this.connections]){
-      if(!r.pc&&now-r.createdAt>30000){this.sendWith(r,'leave');this.removeConnection(id,'连接确认超时，请重新点击观看');}
+      for(const [generation,meta]of [...r.iceMeta])if(now-meta.createdAt>10000)this.discardIce(r,generation);
+      if((!r.connectedOnce&&now-r.createdAt>HANDSHAKE_TIMEOUT)||(r.negotiationDeadline&&now>r.negotiationDeadline)){
+        if(r.role==='host'){if(this.joinCooldowns.size>=128&&!this.joinCooldowns.has(r.peerUID))this.joinCooldowns.delete(this.joinCooldowns.keys().next().value);this.joinCooldowns.set(r.peerUID,now+5000);}
+        this.sendWith(r,'leave');this.removeConnection(id,'连接确认超时，请稍后重新点击观看');
+      }
       else if(r.disconnectedAt&&now-r.disconnectedAt>10000){r.disconnectedAt=now;this.restart(id);}
     }
     if(this.view&&!this.view.approved&&now-this.view.requestedAt>60000)this.stopViewing('连接超时，请重新点击观看');

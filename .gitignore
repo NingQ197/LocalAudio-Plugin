@@ -28,3 +28,5 @@ release_denoise_manifest.h
 ts3-share-network.json
 ts3-localaudio.ini
 localaudio-guide.ini
+
+/.venv/

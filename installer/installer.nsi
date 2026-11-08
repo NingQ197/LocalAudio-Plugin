@@ -19,11 +19,11 @@ InstallDir ""
 BrandingText "Design by ningq"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "2.5.3.0"
+VIProductVersion "2.5.4.0"
 VIAddVersionKey "ProductName" "LocalAudio 独立插件"
 VIAddVersionKey "FileDescription" "LocalAudio ${EDITION}独立插件安装包"
 VIAddVersionKey "LegalCopyright" "Design by ningq; third-party notices included"
-VIAddVersionKey "FileVersion" "2.5.3"
+VIAddVersionKey "FileVersion" "2.5.4"
 VIAddVersionKey "Comments" "Design by ningq"
 !define MUI_WELCOMEPAGE_TITLE "安装 LocalAudio ${EDITION}"
 !define MUI_WELCOMEPAGE_TEXT "Design by ningq。$\r$\n$\r$\n独立插件：AI 麦克风降噪与应用音频共享；屏幕版另含屏幕共享。$\r$\n$\r$\n安装前完全退出 TS。需要已有的官方 TeamSpeak 3.6.2（64 位）。首次启动有两步纯文字教程，安装不会自动开启采集。"
@@ -44,6 +44,10 @@ Var BackupDir
 Var StageDir
 Var RuntimeMajor
 Var RuntimeCandidate
+Var SafePath
+Var SafeRoot
+Var SafeParent
+Var SafeError
 !define REGKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\LocalAudio-Plugin"
 !ifdef INSTALLER_TEST
 !undef REGKEY
@@ -134,8 +138,74 @@ Function ValidateClient
 FunctionEnd
 
 !macro SafeProfile PREFIX
+Function ${PREFIX}AssertSafePathTree
+ Exch $SafePath
+ ; Normalize before walking every existing ancestor, not just the leaf.
+ StrCpy $SafeParent $SafePath 4
+ ${If} $SafeParent == "\\?\"
+ ${OrIf} $SafeParent == "\\.\"
+  Goto unsafe_profile_path
+ ${EndIf}
+ System::Call 'kernel32::GetFullPathNameW(w "$SafePath", i ${NSIS_MAX_STRLEN}, w .r3, p 0) i.r2'
+ ${If} $2 <= 0
+ ${OrIf} $2 >= ${NSIS_MAX_STRLEN}
+  Goto unsafe_profile_path
+ ${EndIf}
+ StrCpy $SafePath $3
+ ${GetRoot} "$SafePath" $SafeRoot
+ ${If} $SafeRoot == ""
+  Goto unsafe_profile_path
+ ${EndIf}
+ safe_profile_ancestor:
+  ${If} $SafePath == $SafeRoot
+   StrCpy $SafePath "$SafeRoot\"
+  ${EndIf}
+  System::Call 'kernel32::GetFileAttributesW(w "$SafePath") i.r2 ?e'
+  Pop $SafeError
+  ${If} $2 == -1
+   ${If} $SafePath == $SafeRoot
+   ${OrIf} $SafePath == "$SafeRoot\"
+    Goto unsafe_profile_path
+   ${EndIf}
+   ; Missing new descendants are allowed; all other lookup failures close.
+   ${If} $SafeError != 2
+   ${AndIf} $SafeError != 3
+    Goto unsafe_profile_path
+   ${EndIf}
+  ${Else}
+   IntOp $2 $2 & 1040 ; FILE_ATTRIBUTE_REPARSE_POINT | DIRECTORY
+   ${If} $2 != 16
+    Goto unsafe_profile_path
+   ${EndIf}
+  ${EndIf}
+  ${If} $SafePath == $SafeRoot
+  ${OrIf} $SafePath == "$SafeRoot\"
+   Goto safe_profile_done
+  ${EndIf}
+  ${GetParent} "$SafePath" $SafeParent
+  ${If} $SafeParent == ""
+  ${OrIf} $SafeParent == $SafePath
+   Goto unsafe_profile_path
+  ${EndIf}
+  StrCpy $SafePath "$SafeParent"
+  Goto safe_profile_ancestor
+ unsafe_profile_path:
+  MessageBox MB_ICONSTOP "目标目录无法安全访问或包含链接，已停止安装/卸载。" /SD IDOK
+  SetErrorLevel 2
+  Abort
+ safe_profile_done:
+ Pop $SafePath
+FunctionEnd
 Function ${PREFIX}SafeProfile
- ; Refuse directory reparse points before backup, installation or uninstall.
+ System::Call 'kernel32::GetFullPathNameW(w "$INSTDIR", i ${NSIS_MAX_STRLEN}, w .r3, p 0) i.r2'
+ ${If} $2 <= 0
+ ${OrIf} $2 >= ${NSIS_MAX_STRLEN}
+  MessageBox MB_ICONSTOP "无法解析目标目录，已停止安装/卸载。" /SD IDOK
+  SetErrorLevel 2
+  Abort
+ ${EndIf}
+ StrCpy $INSTDIR $3
+ ; Reject links at the profile, its ancestors, and each owned subdirectory.
  ${ForEach} $0 0 8 + 1
   StrCpy $1 "$INSTDIR"
   ${If} $0 == 1
@@ -155,15 +225,8 @@ Function ${PREFIX}SafeProfile
   ${ElseIf} $0 == 8
    StrCpy $1 "$INSTDIR\LocalAudio-Plugin\backups"
   ${EndIf}
-  System::Call 'kernel32::GetFileAttributesW(w r1) i.r2'
-  ${If} $2 != -1
-   IntOp $2 $2 & 1024
-   ${If} $2 != 0
-    MessageBox MB_ICONSTOP "目标目录包含链接或重解析点，已停止安装/卸载。" /SD IDOK
-    SetErrorLevel 2
-    Abort
-   ${EndIf}
-  ${EndIf}
+  Push $1
+  Call ${PREFIX}AssertSafePathTree
  ${Next}
 FunctionEnd
 !macroend
@@ -352,7 +415,7 @@ Section "LocalAudio 独立插件"
  ${If} $0 == "$INSTDIR\LocalAudio-Plugin"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\LocalAudio-Plugin-2.4"
  ${EndIf}
- WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "2.5.3"
+ WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "2.5.4"
  WriteRegStr HKCU "${REGKEY}" "Publisher" "ningq"
  WriteRegStr HKCU "${REGKEY}" "InstallLocation" "$INSTDIR\LocalAudio-Plugin"
  WriteRegStr HKCU "${REGKEY}" "UninstallString" '$\"$INSTDIR\LocalAudio-Plugin\uninstall.exe$\"'

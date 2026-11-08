@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 #include <wincrypt.h>
+#include <bcrypt.h>
 #include <windns.h>
 
 namespace la {
@@ -112,6 +113,16 @@ Context Current() {
        c.api.getClientID(c.handler,&c.self)==ERROR_ok && c.api.getChannelOfClient(c.handler,c.self,&c.channel)==ERROR_ok)
         c.connected=c.self && c.channel;
     return c;
+}
+std::string ClientUid(const Context& c,anyID client) {
+    if(!c.api.getClientVariableAsString||!c.api.freeMemory||!client)return {};
+    char* value=nullptr;
+    const auto status=c.api.getClientVariableAsString(c.handler,client,CLIENT_UNIQUE_IDENTIFIER,&value);
+    std::string uid;
+    if(status==ERROR_ok&&value){const size_t length=strnlen(value,257);if(length&&length<=256)uid.assign(value,length);}
+    if(value)c.api.freeMemory(value);
+    if(std::any_of(uid.begin(),uid.end(),[](unsigned char ch){return ch<=32||ch==127;}))return {};
+    return uid;
 }
 std::wstring ConfigPath(const wchar_t* file) { std::lock_guard<std::mutex> lock(bridgeMutex); return directory+L"\\"+file; }
 std::string Base64(const BYTE* bytes,size_t n) {
@@ -220,41 +231,117 @@ bool Network(const Json& input,Json& result) {
     if(!policy.empty())result["iceTransportPolicy"]=policy;
     result["maxViewers"]=Int(input,"maxViewers",4,1,6);return true;
 }
-Json LoadNetwork() {
-    std::ifstream file(ConfigPath(L"ts3-share-network.json").c_str(),std::ios::binary);
-    if(!file)return DefaultNetwork();file.seekg(0,std::ios::end);auto size=file.tellg();if(size<0||size>32768)return DefaultNetwork();file.seekg(0);
-    std::string text((std::istreambuf_iterator<char>(file)),{});
-    Json stored=Parse(text,32768), cleaned;
-    if(stored.contains("protectedCredential")&&stored["protectedCredential"].is_string()) {
-        std::string encrypted; if(Unbase64(Text(stored,"protectedCredential",8192),encrypted)) {
-            DATA_BLOB in{(DWORD)encrypted.size(),reinterpret_cast<BYTE*>(encrypted.data())},out{};
-            if(CryptUnprotectData(&in,nullptr,nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&out)) {
-                stored["turnCredential"]=std::string(reinterpret_cast<char*>(out.pbData),out.cbData);LocalFree(out.pbData);
-            }
-        }
-    }
-    return Network(stored,cleaned)?cleaned:DefaultNetwork();
+// The scope is computed here, never accepted from a WebView request. Include
+// the complete configured TURN endpoint set; only automatic mode follows TS.
+std::string CredentialScope(const Json& network,const std::string& automaticHost) {
+    std::set<std::string> endpoints;
+    auto at=network.find("turnUrls");
+    if(at!=network.end()&&at->is_array())for(const auto& item:*at)if(item.is_string())endpoints.insert(item.get<std::string>());
+    const bool automatic=endpoints.empty();
+    if(automatic){if(automaticHost.empty())return {};endpoints.insert("turn:"+automaticHost+":21113?transport=udp");}
+    const std::string input=Json({{"v",1},{"mode",automatic?"automatic":"fixed"},{"endpoints",endpoints}}).dump();
+    BCRYPT_ALG_HANDLE algorithm=nullptr;
+    if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)return {};
+    unsigned char digest[32]={};
+    const auto result=BCryptHash(algorithm,nullptr,0,reinterpret_cast<PUCHAR>(const_cast<char*>(input.data())),static_cast<ULONG>(input.size()),digest,sizeof(digest));
+    BCryptCloseAlgorithmProvider(algorithm,0);if(result<0)return {};
+    static const char* hex="0123456789abcdef";std::string scope="turn-scope-v1:";
+    for(unsigned char value:digest){scope+=hex[value>>4];scope+=hex[value&15];}return scope;
 }
-bool SaveNetwork(Json network) {
-    std::string credential=Text(network,"turnCredential",2048);network.erase("turnCredential");
-    if(!credential.empty()) {
-        DATA_BLOB in{(DWORD)credential.size(),reinterpret_cast<BYTE*>(credential.data())},out{};
-        if(!CryptProtectData(&in,L"LocalAudio TURN credential",nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&out))return false;
+Json ReadNetworkFile() {
+    std::ifstream file(ConfigPath(L"ts3-share-network.json").c_str(),std::ios::binary);
+    if(!file)return Json::object();file.seekg(0,std::ios::end);auto size=file.tellg();if(size<0||size>32768)return Json::object();file.seekg(0);
+    std::string text((std::istreambuf_iterator<char>(file)),{});return Parse(text,32768);
+}
+struct StoredCredential {bool present=false,scoped=false;std::string username,credential,scope;};
+StoredCredential ReadStoredCredential(const Json& stored) {
+    StoredCredential result;
+    // Recognize legacy plaintext/DPAPI-password formats only to invalidate them
+    // and to prevent an unchanged form value being rebound without user input.
+    result.username=Text(stored,"turnUsername",1024);result.credential=Text(stored,"turnCredential",2048);
+    result.present=!result.credential.empty();
+    const auto encoded=Text(stored,"protectedCredential",32768);
+    if(encoded.empty())return result;result.present=true;
+    std::string encrypted;if(!Unbase64(encoded,encrypted))return result;
+    DATA_BLOB in{static_cast<DWORD>(encrypted.size()),reinterpret_cast<BYTE*>(encrypted.data())},out{};
+    if(!CryptUnprotectData(&in,nullptr,nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&out))return result;
+    const std::string plain(reinterpret_cast<char*>(out.pbData),out.cbData);
+    SecureZeroMemory(out.pbData,out.cbData);LocalFree(out.pbData);
+    const Json envelope=Parse(plain,32768);
+    if(Text(envelope,"format",64)=="LocalAudio/TURN-v2") {
+        result.username=Text(envelope,"username",1024);result.credential=Text(envelope,"credential",2048);result.scope=Text(envelope,"scope",128);
+        result.scoped=!result.username.empty()&&!result.credential.empty()&&!result.scope.empty();
+    } else if(plain.size()<=2048)result.credential=plain;
+    return result;
+}
+Json LoadNetwork(const std::string& relayHost) {
+    const Json stored=ReadNetworkFile();Json cleaned;if(!Network(stored,cleaned))cleaned=DefaultNetwork();
+    const auto credential=ReadStoredCredential(stored);const auto expected=CredentialScope(cleaned,relayHost);
+    const bool valid=credential.scoped&&!expected.empty()&&credential.scope==expected&&credential.username==Text(cleaned,"turnUsername",1024);
+    cleaned["turnCredential"]="";
+    if(valid)cleaned["turnCredential"]=credential.credential;
+    else if(credential.present)cleaned["turnUsername"]="";
+    const bool reset=credential.present&&!valid;
+    cleaned["credentialScopeInvalid"]=reset||Bool(stored,"credentialResetRequired",false);
+    cleaned["credentialScopeReason"]=reset?(credential.scoped?"destination-changed":"legacy-unscoped"):(Bool(stored,"credentialResetRequired",false)?"reenter-required":"");
+    return cleaned;
+}
+Json LoadNetwork(){const auto relayHost=RelayHost();return LoadNetwork(relayHost);}
+bool SaveNetwork(Json network,bool credentialEdited=false,const std::string& observedTargetScope={},bool* targetChanged=nullptr) {
+    if(targetChanged)*targetChanged=false;
+    Json clean;if(!Network(network,clean))return false;network=std::move(clean);
+    std::string credential=Text(network,"turnCredential",2048),username=Text(network,"turnUsername",1024);
+    const auto previousStored=ReadNetworkFile();const auto previous=ReadStoredCredential(previousStored);
+    const bool automatic=network["turnUrls"].empty();
+    const auto relayHost=automatic?RelayHost():std::string{};
+    const auto scope=CredentialScope(network,relayHost);
+    // This marker only detects a stale UI observation. It cannot select the
+    // protected scope: the native destination above is independently computed.
+    // Reject before writing so legacy/previous credentials remain recoverable.
+    if(automatic&&!credential.empty()&&(scope.empty()||observedTargetScope!=scope)){
+        if(targetChanged)*targetChanged=true;return false;
+    }
+    // A visible old password carried across a URL edit is not fresh consent to
+    // use it at a different service. The UI marks an actual password input; a
+    // missing marker fails closed and asks for one explicit re-entry.
+    const bool rebind=previous.present&&!previous.credential.empty()&&credential==previous.credential&&previous.scope!=scope&&!credentialEdited;
+    const bool reset=!credential.empty()&&(scope.empty()||rebind);
+    if(reset){credential.clear();username.clear();network["turnUsername"]="";}
+    network.erase("turnCredential");network["credentialResetRequired"]=reset;
+    // A fail-closed Bootstrap deliberately shows empty credential fields. An
+    // unrelated settings save must not erase that recoverable old credential.
+    // Only an actual password edit clears/replaces it; preserving an old blob
+    // never grants it the newly computed scope.
+    const bool preserve=previous.present&&!credentialEdited&&(credential.empty()||reset);
+    const std::string savedScope=preserve?previous.scope:scope;
+    if(preserve){
+        credential=previous.credential;username=previous.username;network["turnUsername"]=username;
+        network["credentialResetRequired"]=!previous.scoped;
+        const auto encoded=Text(previousStored,"protectedCredential",32768);
+        if(!encoded.empty())network["protectedCredential"]=encoded;
+    }
+    if(!network.contains("protectedCredential")&&!credential.empty()&&(preserve||!username.empty())) {
+        const std::string payload=Json({{"format","LocalAudio/TURN-v2"},{"username",username},{"credential",credential},{"scope",savedScope}}).dump();
+        DATA_BLOB in{static_cast<DWORD>(payload.size()),reinterpret_cast<BYTE*>(const_cast<char*>(payload.data()))},out{};
+        if(!CryptProtectData(&in,L"LocalAudio scoped TURN credential",nullptr,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&out))return false;
         network["protectedCredential"]=Base64(out.pbData,out.cbData);LocalFree(out.pbData);
     }
     auto path=ConfigPath(L"ts3-share-network.json"),tmp=path+L".tmp";
+    const std::string text=network.dump(2);if(text.size()>32768)return false;
     std::ofstream file(tmp.c_str(),std::ios::binary|std::ios::trunc);if(!file)return false;
-    std::string text=network.dump(2);file.write(text.data(),text.size());file.close();
+    file.write(text.data(),text.size());file.close();
     if(!file||!MoveFileExW(tmp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){DeleteFileW(tmp.c_str());return false;}return true;
 }
 Json EffectiveNetwork() {
-    auto n=LoadNetwork(); auto host=RelayHost();
+    // One destination snapshot must govern both authentication and URL expansion.
+    const auto host=RelayHost();auto n=LoadNetwork(host);
     n["automaticStun"]=n["stunUrls"].empty(); n["automaticTurn"]=n["turnUrls"].empty();
     if(!host.empty()) {
         if(n["stunUrls"].empty()) n["stunUrls"].push_back("stun:"+host+":21113");
         if(n["turnUrls"].empty()) n["turnUrls"].push_back("turn:"+host+":21113?transport=udp");
     }
     n["automaticHost"]=host;
+    n["observedTargetScope"]=CredentialScope(Json{{"turnUrls",Json::array()}},host);
     return n;
 }
 Json AudioSettings() {
@@ -269,14 +356,15 @@ Json Bootstrap() {
         anyID* ids=nullptr;
         if(c.api.getChannelClientList(c.handler,c.channel,&ids)==ERROR_ok&&ids) {
             for(size_t i=0;ids[i]&&i<1024;++i) {
-                if(ids[i]==c.self)continue;char* name=nullptr;std::string label="Client "+std::to_string(ids[i]);
+                if(ids[i]==c.self)continue;const auto uid=ClientUid(c,ids[i]);if(uid.empty())continue;
+                char* name=nullptr;std::string label="Client "+std::to_string(ids[i]);
                 if(c.api.getClientVariableAsString&&c.api.getClientVariableAsString(c.handler,ids[i],CLIENT_NICKNAME,&name)==ERROR_ok&&name) { label=std::string(name).substr(0,512);if(c.api.freeMemory)c.api.freeMemory(name); }
-                peers.push_back({{"id",ids[i]},{"name",label}});
+                peers.push_back({{"id",ids[i]},{"name",label},{"uid",uid}});
             }
             if(c.api.freeMemory)c.api.freeMemory(ids);
         }
     }
-    return {{"type","bootstrap"},{"version","2.5.0"},{"protocolMajor",2},{"connected",c.connected},{"selfID",c.self},{"handler",c.handler},{"channelID",c.channel},
+    return {{"type","bootstrap"},{"version","2.5.4"},{"protocolMajor",2},{"connected",c.connected},{"selfID",c.self},{"handler",c.handler},{"channelID",c.channel},
       {"peers",peers},{"audioSettings",AudioSettings()},{"networkConfig",EffectiveNetwork()}};
 }
 bool TakeBudget(Budget& budget,size_t bytes,size_t packets,size_t maxBytes) {
@@ -324,11 +412,18 @@ void TS3ScreenShutdown() {StopShare("plugin-shutdown");std::lock_guard<std::mute
 void ShareBridgeSetEmitter(ShareJsonEmitter sink) {std::lock_guard<std::mutex> lock(bridgeMutex);emitter=std::move(sink);previousContext.clear();previousAudio.clear();previousScreen.clear();previousDenoise.clear();}
 std::string ShareBridgeContextJson() {return Bootstrap().dump();}
 void TS3ScreenCurrentHandlerChange(uint64) {StopShare("connection-changed");ShareBridgeTick();}
+void TS3ScreenPeerMembershipChanged(uint64 handler,anyID client) {
+    const Context c=Current();if(!c.connected||handler!=c.handler||!client||client==c.self)return;
+    const std::string prefix=std::to_string(handler)+":"+std::to_string(c.channel)+":"+std::to_string(client)+":";
+    {std::lock_guard<std::mutex> lock(bridgeMutex);for(auto i=assemblies.begin();i!=assemblies.end();)if(i->first.rfind(prefix,0)==0)i=assemblies.erase(i);else ++i;}
+    Emit({{"type","signal"},{"nativePeerRevoked",true},{"handler",handler},{"channelID",c.channel},{"from",client}});
+    ShareBridgeTick();
+}
 void ShareBridgeWindowClosed() {StopShare("window-closed");}
 bool ShareBridgeMayPlayRemoteAudio() {std::lock_guard<std::mutex> lock(bridgeMutex);return autoplayPermitted;}
 void ShareBridgeTick() {
     Context c=Current();bool changed=false;
-    {std::lock_guard<std::mutex> lock(bridgeMutex);changed=lastHandler!=c.handler||lastChannel!=c.channel;Prune();}
+    {std::lock_guard<std::mutex> lock(bridgeMutex);changed=lastHandler!=c.handler||lastChannel!=c.channel;if(changed)assemblies.clear();Prune();}
     if(changed)StopShare("channel-changed");
     {std::lock_guard<std::mutex> lock(bridgeMutex);lastHandler=c.handler;lastChannel=c.channel;}
     Json context=Bootstrap();std::string contextText=context.dump();bool emitContext;
@@ -371,7 +466,7 @@ void ShareBridgeHandleMessage(const std::string& text) {
             auto payload=m.find("payload");if(payload==m.end()||!payload->is_object())return;
             std::string session=Text(*payload,"sessionID",128),kind=Text(*payload,"kind",64);
             if(kind=="viewrequest"||kind=="leave"){std::lock_guard<std::mutex> lock(bridgeMutex);autoplayPermitted=kind=="viewrequest";}
-            if(!session.empty()&&(kind=="offer"||kind=="hoststart"||kind=="announce"||kind=="share-started"||kind=="share"||kind=="hostannounce")) {
+            if(!session.empty()&&(kind=="viewrequest"||kind=="offer"||kind=="hoststart"||kind=="announce"||kind=="share-started"||kind=="share"||kind=="hostannounce")) {
                 Context c=Current();std::lock_guard<std::mutex> lock(bridgeMutex);activeSession=session;activeHandler=c.handler;activeChannel=c.channel;
             }
             if(kind=="hoststop"||kind=="stop"||kind=="share-stopped") {std::lock_guard<std::mutex> lock(bridgeMutex);if(activeSession==session)activeSession.clear();}
@@ -388,11 +483,15 @@ void ShareBridgeHandleMessage(const std::string& text) {
         } else if(type=="saveNetworkConfig") {
             Json clean;auto at=m.find("config");if(at==m.end())at=m.find("networkConfig");
             if(at==m.end()||!Network(*at,clean)){Error("STUN/TURN 配置格式不正确");return;}
-            if(!SaveNetwork(clean)){Error("无法保存网络配置或保护 TURN 凭据");return;}Emit(Bootstrap());
+            bool targetChanged=false;
+            if(!SaveNetwork(clean,Bool(m,"credentialEdited",false),Text(m,"observedTargetScope",128),&targetChanged)){
+                if(targetChanged){Emit(Bootstrap());Error("中继目标在输入后已变化，请重新输入用户名和密码并保存一次。");}
+                else Error("无法保存网络配置或保护 TURN 凭据");return;
+            }Emit(Bootstrap());
         } else if(type=="shareStopped")StopShare("share-stopped");
     } catch(const std::exception&) {Error("无法处理本地界面请求");}
 }
-void TS3ScreenOnPluginCommand(uint64 handler,const char* name,const char* command,anyID invoker,const char* invokerName,const char*) {
+void TS3ScreenOnPluginCommand(uint64 handler,const char* name,const char* command,anyID invoker,const char* invokerName,const char* invokerUid) {
     try {
         if(!command||!name||!invoker)return;
         std::string plugin=name;std::transform(plugin.begin(),plugin.end(),plugin.begin(),[](unsigned char c){return (char)std::tolower(c);});
@@ -400,6 +499,8 @@ void TS3ScreenOnPluginCommand(uint64 handler,const char* name,const char* comman
         size_t length=strnlen(command,7001);if(length>7000||length<8||strncmp(command,kPrefix,strlen(kPrefix))!=0)return;
         Context c=Current();uint64 channel=0;
         if(!c.connected||handler!=c.handler||invoker==c.self||!c.api.getChannelOfClient||c.api.getChannelOfClient(handler,invoker,&channel)!=ERROR_ok||channel!=c.channel)return;
+        const auto uid=ClientUid(c,invoker);
+        if(uid.empty()||!invokerUid||strnlen(invokerUid,257)!=uid.size()||uid!=invokerUid)return;
         Json p=Parse(std::string(command+strlen(kPrefix),length-strlen(kPrefix)),7000);
         if(!p.is_object()||Int(p,"v",0,0,10)!=2||!p.contains("c")||!p["c"].is_number_unsigned()||p["c"].get<uint64>()!=c.channel)return;
         int to=Int(p,"to",0,0,65535);if(to&&to!=c.self)return;
@@ -407,14 +508,15 @@ void TS3ScreenOnPluginCommand(uint64 handler,const char* name,const char* comman
         int64_t stamp=p["ts"].get<int64_t>(),now=UnixSeconds();if(stamp<now-300||stamp>now+60)return;
         int count=Int(p,"n",0,0,48),index=Int(p,"i",-1,-1,48);std::string nonce=Text(p,"id",64),data=Text(p,"d",kChunk);
         if(!count||index<0||index>=count||nonce.size()<16||data.empty())return;
-        std::string key=std::to_string(handler)+":"+std::to_string(invoker)+":"+nonce,encoded;
+        const std::string peerPrefix=std::to_string(handler)+":"+std::to_string(c.channel)+":"+std::to_string(invoker)+":"+std::to_string(uid.size())+":"+uid+":";
+        std::string key=peerPrefix+nonce,encoded;
         {std::lock_guard<std::mutex> lock(bridgeMutex);Prune();if(!TakeBudget(budgets[invoker],length,256,1024*1024)||completed.count(key))return;
-         auto at=assemblies.find(key);if(at==assemblies.end()) {size_t peerCount=0;auto peerPrefix=std::to_string(handler)+":"+std::to_string(invoker)+":";for(const auto& pair:assemblies)if(pair.first.rfind(peerPrefix,0)==0)++peerCount;if(assemblies.size()>=32||peerCount>=4)return;Assembly a;a.count=count;a.created=Now();a.fragments.resize(count);at=assemblies.emplace(key,std::move(a)).first;}
+         auto at=assemblies.find(key);if(at==assemblies.end()) {size_t peerCount=0;for(const auto& pair:assemblies)if(pair.first.rfind(peerPrefix,0)==0)++peerCount;if(assemblies.size()>=32||peerCount>=4)return;Assembly a;a.count=count;a.created=Now();a.fragments.resize(count);at=assemblies.emplace(key,std::move(a)).first;}
          Assembly& a=at->second;if(a.count!=(size_t)count||!a.fragments[index].empty())return;
          a.bytes+=data.size();if(a.bytes>kMaxEncoded){assemblies.erase(at);return;}a.fragments[index]=data;++a.have;if(a.have!=a.count)return;
          for(const auto& part:a.fragments)encoded+=part;assemblies.erase(at);completed[key]=Now();}
         std::string raw;if(!Unbase64(encoded,raw)||raw.size()>kMaxSignal)return;Json payload=Parse(raw,kMaxSignal);if(!payload.is_object())return;
-        Emit({{"type","signal"},{"from",invoker},{"name",std::string(invokerName?invokerName:"").substr(0,512)},{"payload",payload}});
+        Emit({{"type","signal"},{"handler",handler},{"channelID",c.channel},{"from",invoker},{"fromUid",uid},{"name",std::string(invokerName?invokerName:"").substr(0,512)},{"payload",payload}});
     } catch(const std::exception&) { /* Malformed/untrusted control traffic is ignored. */ }
 }
 }

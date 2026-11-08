@@ -1,13 +1,21 @@
 """Build an independent installer from a locally built plugin."""
 from pathlib import Path
-import argparse,hashlib,json,shutil,subprocess
+import argparse,hashlib,json,re,shutil,subprocess
 R=Path(__file__).resolve().parent.parent
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+def validate_makensis(executable):
+ result=subprocess.run([str(executable),'/VERSION'],check=True,capture_output=True,text=True)
+ match=re.fullmatch(r'v(\d+)\.(\d+)(?:\.(\d+))?',result.stdout.strip())
+ if not match or tuple(map(int,match.groups(default='0'))) < (3,13,0):
+  raise RuntimeError('NSIS 3.13 or newer is required')
+ return result.stdout.strip()
+
 def main():
  p=argparse.ArgumentParser()
  for name in ['edition','bundle','dll','helper','webview-installer','vc-installer','output','makensis']:
   p.add_argument('--'+name,required=True,type=Path if name!='edition' else str)
  a=p.parse_args();assert a.edition in ['audio','screen']
+ validate_makensis(a.makensis)
  expected=[(a.webview_installer,'9b0142e22e8daa92855d746ae4d1e9eeef561ccaf67d1dd452165c4af3df3191'),(a.vc_installer,'843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c')]
  for f,h in expected:
   if sha(f)!=h:raise RuntimeError('Pinned Microsoft redistributable hash mismatch')

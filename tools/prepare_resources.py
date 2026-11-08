@@ -13,7 +13,7 @@ def main():
     if a.encrypt:from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     names=['index.html','styles.css','app.js']+(['rtc.js','pcm.js','pcm-worklet.js'] if a.edition=='screen' else [])
     for name in names:
-        b=(R/a.edition/'frontend'/name).read_bytes();aad=f'TS3LocalAudio/2.5.0/ui/{name}';stored=b
+        b=(R/a.edition/'frontend'/name).read_bytes();aad=f'TS3LocalAudio/2.5.4/ui/{name}';stored=b
         if a.encrypt:
             nonce=secrets.token_bytes(12);stored=nonce+AESGCM(key).encrypt(nonce,b,aad.encode())
         disk='ui/'+name+('.enc' if a.encrypt else '');(out/disk).write_bytes(stored)
@@ -31,6 +31,6 @@ def main():
         rows.append('{L"'+name+'",'+cb(h)+'}');runtime.append(dict(path='denoise/'+name,storedSha256=h.hex(),protected=True))
     for f in (R/'third_party/licenses').glob('*.txt'):shutil.copyfile(f,out/'denoise'/f.name)
     (out/'include/release_denoise_manifest.h').write_text('#pragma once\nstruct DenoiseRuntimeEntry {const wchar_t* path;unsigned char sha256[32];};\nstatic const DenoiseRuntimeEntry kDenoiseRuntimeFiles[]={\n'+',\n'.join(rows)+'\n};\n',encoding='utf-8')
-    (out/'release-info.json').write_text(json.dumps(dict(version='2.5.0',variant=a.edition,files=entries,runtimeFiles=runtime,loaderSha256=digest(loader).hex()),indent=2),encoding='utf-8')
+    (out/'release-info.json').write_text(json.dumps(dict(version='2.5.4',variant=a.edition,files=entries,runtimeFiles=runtime,loaderSha256=digest(loader).hex()),indent=2),encoding='utf-8')
     print('Generated resource bundle:', out.name)
 if __name__=='__main__':main()
