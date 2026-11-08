@@ -4,15 +4,11 @@ Third-party notices are installed with the plugin:
 RNNoise (BSD-3-Clause), GTCRN (MIT), Sherpa-ONNX (Apache-2.0),
 ONNX Runtime (MIT), nlohmann/json (MIT), Microsoft WebView2 SDK terms.
 
-The native Qt bridge dynamically uses Qt libraries provided by the user's
-existing official TeamSpeak installation. No Qt or TeamSpeak client binaries
-are included as project source or republished in this Git repository.
+The native Qt bridge dynamically uses the Qt libraries provided by the
+installed TeamSpeak client.
 
 The installer includes unmodified, signed Microsoft WebView2 and Visual C++
 redistributables under their applicable Microsoft terms. The third-party
 license texts and the native bridge source/build notes accompany the plugin.
-
-The creator illustration, ID and QR code were supplied by the user for display
-in the installer. Their presence does not transfer rights in the artwork.
 
 No additional open-source license for LocalAudio itself is granted here.
