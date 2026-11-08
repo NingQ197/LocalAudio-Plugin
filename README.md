@@ -57,7 +57,11 @@
 
 `audio/` 和 `screen/` 分别是两个版本，`native-ui/` 是降噪设置和首次教程，`installer/` 是独立插件安装器。构建方法见 [BUILDING.md](BUILDING.md)。
 
-感谢 RNNoise、GTCRN、Sherpa-ONNX、ONNX Runtime 等开源项目。相关第三方许可见 `third_party/` 和 `THIRD_PARTY_NOTICES.txt`。
+## 许可证
+
+项目源码采用 [MIT 许可证](LICENSE)，欢迎使用、修改和贡献代码。第三方组件遵循各自的许可条款；应用商标和创作者图片不包含在代码许可证内。
+
+感谢 RNNoise、GTCRN、Sherpa-ONNX、ONNX Runtime 等开源项目。相关第三方许可见 `third_party/` 和 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。
 
 ## 爱发电
 

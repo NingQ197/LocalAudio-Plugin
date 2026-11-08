@@ -19,11 +19,11 @@ InstallDir ""
 BrandingText "Design by ningq"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "2.5.2.0"
+VIProductVersion "2.5.3.0"
 VIAddVersionKey "ProductName" "LocalAudio 独立插件"
 VIAddVersionKey "FileDescription" "LocalAudio ${EDITION}独立插件安装包"
 VIAddVersionKey "LegalCopyright" "Design by ningq; third-party notices included"
-VIAddVersionKey "FileVersion" "2.5.2"
+VIAddVersionKey "FileVersion" "2.5.3"
 VIAddVersionKey "Comments" "Design by ningq"
 !define MUI_WELCOMEPAGE_TITLE "安装 LocalAudio ${EDITION}"
 !define MUI_WELCOMEPAGE_TEXT "Design by ningq。$\r$\n$\r$\n独立插件：AI 麦克风降噪与应用音频共享；屏幕版另含屏幕共享。$\r$\n$\r$\n安装前完全退出 TS。需要已有的官方 TeamSpeak 3.6.2（64 位）。首次启动有两步纯文字教程，安装不会自动开启采集。"
@@ -352,7 +352,7 @@ Section "LocalAudio 独立插件"
  ${If} $0 == "$INSTDIR\LocalAudio-Plugin"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\LocalAudio-Plugin-2.4"
  ${EndIf}
- WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "2.5.2"
+ WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "2.5.3"
  WriteRegStr HKCU "${REGKEY}" "Publisher" "ningq"
  WriteRegStr HKCU "${REGKEY}" "InstallLocation" "$INSTDIR\LocalAudio-Plugin"
  WriteRegStr HKCU "${REGKEY}" "UninstallString" '$\"$INSTDIR\LocalAudio-Plugin\uninstall.exe$\"'

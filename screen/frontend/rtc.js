@@ -13,11 +13,11 @@ export function normalizeNetwork(raw={}) {
   out.turnUsername=String(raw.turnUsername||'');out.turnCredential=String(raw.turnCredential||'');
   out.maxViewers=Math.min(6,Math.max(1,Number(raw.maxViewers)||4));return out;
 }
-export function turnCredentialStatus(raw={},now=Math.floor(Date.now()/1000)) {
+export function turnCredentialStatus(raw={}) {
   const n=normalizeNetwork(raw);
   if(!n.turnUsername.trim()||!n.turnCredential.trim())return 'missing';
-  const expiry=/^(\d+):/.exec(n.turnUsername.trim());
-  if(expiry&&Number(expiry[1])<=now)return 'expired';
+  // Permanent TURN usernames may contain a numeric prefix and colon.
+  // Credential validity is determined by the TURN server, not username syntax.
   return 'valid';
 }
 export function peerConfiguration(raw) {
@@ -28,7 +28,6 @@ export function peerConfiguration(raw) {
   if(n.iceTransportPolicy==='relay'){
     if(!n.turnUrls.length)throw Error('强制中继需要先配置 TURN 服务器。');
     if(auth==='missing')throw Error('仅使用 TURN 中继需要填写服务器生成的用户名和密码。');
-    if(auth==='expired')throw Error('TURN 临时凭据已过期，请重新生成后再连接。');
   }
   return {iceServers,iceTransportPolicy:n.iceTransportPolicy,bundlePolicy:'max-bundle'};
 }

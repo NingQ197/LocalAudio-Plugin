@@ -1,0 +1,25 @@
+Qt 5.15.2
+
+LocalAudio's native settings and tutorial bridge dynamically links to Qt Core,
+Qt Gui and Qt Widgets 5.15.2. These Qt modules are available under the GNU Lesser
+General Public License version 3, with the GNU General Public License version 3
+incorporated as described in that license. Qt copyright remains with The Qt
+Company and the other copyright holders identified in the Qt source files.
+
+The Qt libraries are supplied by the installed TeamSpeak client. LocalAudio's
+independent installer does not distribute Qt library binaries or modify them.
+Copies of LGPLv3 and GPLv3 are provided in Qt-LGPL-3.0.txt and Qt-GPL-3.0.txt.
+
+Qt 5.15.2 source:
+https://download.qt.io/archive/qt/5.15/5.15.2/single/qt-everywhere-src-5.15.2.tar.xz
+https://github.com/qt/qtbase/tree/v5.15.2
+
+The LocalAudio bridge source is in audio/src/denoise_qt_ui.cpp and
+native-ui/CMakeLists.txt. BUILDING.md describes building the bridge and plugin.
+A build generates its own resource manifests and integrity values, so modified
+bridge binaries can be used with a matching locally built plugin and bundle.
+LocalAudio's terms do not restrict the modification, relinking or reverse
+engineering needed to exercise rights granted by the LGPL.
+
+Qt LGPL information:
+https://www.qt.io/development/open-source-lgpl-obligations

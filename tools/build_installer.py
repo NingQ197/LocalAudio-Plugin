@@ -20,6 +20,8 @@ def main():
  source=res/'source';source.mkdir()
  for name in ['denoise_qt_ui.cpp','denoise_ui_api.h']:shutil.copyfile(R/'audio/src'/name,source/name)
  shutil.copytree(R/'third_party/licenses',res/'licenses')
+ shutil.copyfile(R/'LICENSE',res/'licenses/LocalAudio-MIT.txt')
+ shutil.copyfile(R/'THIRD_PARTY_NOTICES.txt',res/'licenses/LocalAudio-ThirdPartyNotices.txt')
  (res/'README.txt').write_text('LocalAudio independent TS3 plugin. Design by ningq. Requires official TeamSpeak 3.6.2 x64, Windows 10 21H2 or newer.\n',encoding='utf-8')
  for name in ['installer.nsi','windows-version.nsh']:shutil.copyfile(R/'installer'/name,stage/name)
  owned={f.relative_to(stage/'package/plugins').as_posix() for f in (stage/'package/plugins').rglob('*') if f.is_file()}

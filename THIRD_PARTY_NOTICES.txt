@@ -1,14 +1,67 @@
 LocalAudio · Design by ningq
 
-Third-party notices are installed with the plugin:
-RNNoise (BSD-3-Clause), GTCRN (MIT), Sherpa-ONNX (Apache-2.0),
-ONNX Runtime (MIT), nlohmann/json (MIT), Microsoft WebView2 SDK terms.
+LocalAudio's original source code is licensed under the MIT License; see LICENSE.
+Third-party components retain their own licenses. Application logos and marks,
+and the creator image in docs/assets/, are excluded from the code license and
+remain subject to their respective rights.
 
-The native Qt bridge dynamically uses the Qt libraries provided by the
-installed TeamSpeak client.
+Component notices and license texts are in third_party/licenses/ in the source
+repository, and in licenses/ in the supplementary LocalAudio-Licenses.zip.
 
-The installer includes unmodified, signed Microsoft WebView2 and Visual C++
-redistributables under their applicable Microsoft terms. The third-party
-license texts and the native bridge source/build notes accompany the plugin.
+RNNoise v0.2 — BSD-3-Clause
+Copyright Jean-Marc Valin, Amazon, Mozilla, Xiph.Org Foundation and Mark Borgerding.
+https://github.com/xiph/rnnoise/tree/v0.2
+License: RNNoise-BSD-3-Clause.txt
 
-No additional open-source license for LocalAudio itself is granted here.
+GTCRN — MIT
+Copyright 2024 Rong Xiaobin.
+https://github.com/Xiaobin-Rong/gtcrn
+The converted model is obtained from the Sherpa-ONNX enhancement model release:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/speech-enhancement-models
+License: GTCRN-MIT.txt
+
+Sherpa-ONNX v2.0.1 — Apache-2.0
+https://github.com/k2-fsa/sherpa-onnx/tree/v2.0.1
+License: Sherpa-ONNX-Apache-2.0.txt
+
+ONNX Runtime 1.28.2 — MIT, with third-party notices
+Copyright Microsoft Corporation and the contributors identified by the upstream.
+https://github.com/microsoft/onnxruntime/tree/v1.28.2
+License: ONNX-Runtime-MIT.txt
+Additional notices: ONNX-Runtime-ThirdPartyNotices.txt
+
+nlohmann/json v3.12.0 — MIT
+Copyright 2013-2025 Niels Lohmann.
+https://github.com/nlohmann/json/tree/v3.12.0
+License: nlohmann-json-MIT.txt
+
+Microsoft WebView2 SDK 1.0.4314.35
+Copyright Microsoft Corporation and the contributors identified by the SDK.
+https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4314.35
+License supplied by the SDK package: Microsoft-WebView2.txt
+Additional notices supplied by the SDK package: WebView2-NOTICE.txt
+
+Qt 5.15.2 Core, Gui and Widgets — dynamically linked
+Copyright The Qt Company and other Qt copyright holders.
+LocalAudio uses the Qt libraries already supplied by the installed client.
+See Qt-NOTICE.txt, Qt-LGPL-3.0.txt and Qt-GPL-3.0.txt for source and license details.
+https://github.com/qt/qtbase/tree/v5.15.2
+
+TeamSpeak Client Plugin SDK
+Copyright TeamSpeak Systems GmbH. All rights reserved.
+The SDK headers retain their original copyright notices. They are not covered
+by LocalAudio's MIT License, and LocalAudio grants no additional rights in them.
+The TeamSpeak client and its Qt libraries are not included in this repository.
+https://github.com/teamspeak/ts3client-pluginsdk
+
+Microsoft redistributable installers
+The release installers include unmodified, signed Microsoft WebView2 Runtime
+and Visual C++ redistributables. These components are governed by their own
+Microsoft terms, separately from LocalAudio's MIT License and the SDK license.
+https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
+https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
+
+Application identification artwork
+QQ Music, NetEase Cloud Music, Microsoft Edge and Google Chrome logos identify
+the corresponding applications. Their names, logos and trademarks remain the
+property of their respective owners; no trademark rights are granted here.

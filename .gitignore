@@ -17,8 +17,14 @@ __pycache__/
 release_assets_manifest.h
 release_denoise_manifest.h
 .env
+.env.*
+!.env.example
 *.key
 *.pem
 *.pfx
+*.p12
 *.db
 *.log
+ts3-share-network.json
+ts3-localaudio.ini
+localaudio-guide.ini
