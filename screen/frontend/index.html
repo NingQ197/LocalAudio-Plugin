@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>LocalAudio · 屏幕版</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <!-- 控制台顶栏 -->
+    <header class="topbar">
+      <div class="header-left">
+        <div class="brand" aria-label="LocalAudio, Design by ningq">
+          <div class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+              <!-- 精致双通道波形/耳机音频图标 -->
+              <path d="M12 3a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h1a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2H5v-2a7 7 0 0 1 14 0v2h-2a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/>
+            </svg>
+          </div>
+          <div class="brand-meta">
+            <span class="brand-title">LocalAudio</span>
+            <span class="brand-sub">Design by ningq</span>
+          </div>
+        </div>
+
+        <nav class="tabs" role="tablist" aria-label="模式切换">
+          <div class="tab-group">
+            <button class="tab active" data-tab="audio" role="tab" aria-controls="audioPage" aria-selected="true">
+              <span>音乐声音转播</span>
+            </button>
+            <button class="tab" data-tab="screen" role="tab" aria-controls="screenPage" aria-selected="false">
+              <span>屏幕共享</span>
+              <span class="tab-tag">P2P</span>
+            </button>
+          </div>
+          <span class="tab-note" hidden>频道内音画共享</span>
+        </nav>
+      </div>
+
+      <div class="header-right">
+        <div class="context-pill" title="当前 TeamSpeak 频道连接状态">
+          <span class="status-dot" id="contextDot"></span>
+          <span id="contextLabel">等待客户端连接</span>
+        </div>
+        <button class="icon-button" id="networkButton" aria-label="网络设置" title="网络中继与 TURN 设置">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="main-viewport">
+      <!-- 声音共享控制区 -->
+      <section class="page active" id="audioPage" role="tabpanel" aria-labelledby="audioHeading">
+        <h1 id="audioHeading" class="visually-hidden">本地声音共享</h1>
+        
+        <div class="studio-workbench">
+          <!-- 左侧：播放源选择 -->
+          <div class="panel-section source-panel">
+            <div class="panel-header">
+              <span class="panel-title">音频播放源</span>
+              <span id="appCount" class="counter-tag">尚未扫描</span>
+            </div>
+
+            <!-- 常用程序快捷预设 -->
+            <div class="preset-strip" id="presets"></div>
+
+            <!-- 过滤与扫描栏 -->
+            <div class="search-bar">
+              <div class="search-input-wrap">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input id="appSearch" type="search" placeholder="过滤程序或进程名..." autocomplete="off" aria-label="搜索应用">
+              </div>
+              <button class="button secondary scan" id="scanButton" title="重新扫描系统正在播放声音的程序">
+                
+              </button>
+            </div>
+
+            <!-- 程序列表 -->
+            <div class="app-list-container" id="appList" role="region" aria-label="应用列表"></div>
+
+            <!-- 高级手动输入 -->
+            <details class="manual-details">
+              <summary>高级：手动指定 .exe 程序名称</summary>
+              <div class="manual-box">
+                <input id="targetExe" placeholder="例如：foobar2000.exe" spellcheck="false" autocomplete="off">
+              </div>
+            </details>
+          </div>
+
+          <!-- 右侧：通道监听与推流控制 -->
+          <div class="panel-section audio-controls-panel">
+            <!-- 当前选中的播放源展示 -->
+            <div class="channel-monitor-card now-card">
+              <div class="channel-header">
+                <span class="channel-tag">播放器状态</span>
+                <div class="meta-status" id="audioState">
+                  <span class="status-dot"></span>
+                  <span>未开始转播</span>
+                </div>
+              </div>
+              <div class="channel-body">
+                <h2 id="selectedLabel" class="target-title">选择一个应用</h2>
+                <p class="mono target-exe" id="selectedExe">请在左侧选择播放器以混入频道</p>
+              </div>
+            </div>
+
+            <!-- 声音参数控制面板 -->
+            <div class="console-rack volume-card">
+              <div class="rack-header">音乐播放与发送设置</div>
+              
+              <div class="fader-row volume-row">
+                <div class="fader-info">
+                  <span class="fader-label">音乐播放音量</span>
+                  <span class="meter-readout" id="volumeValue">100<span>%</span></span>
+                </div>
+                <p class="fader-help">只调整别人听到的音乐大小，100% 为原始音量。</p>
+                <div class="slider-wrapper">
+                  <input type="range" min="0" max="200" value="100" id="volume" aria-label="共享音量">
+                </div>
+              </div>
+
+              <div class="tuning-grid">
+                <div class="setting-item">
+                  <label for="sampleRate">输出采样率</label>
+                  <select id="sampleRate" class="select-field">
+                    <option value="0">自动跟随 (48000 Hz)</option>
+                    <option value="44100">44100 Hz</option>
+                    <option value="48000">48000 Hz</option>
+                    <option value="96000">96000 Hz</option>
+                  </select>
+                </div>
+                <div class="setting-item">
+                  <label for="bitDepth">采样位深</label>
+                  <select id="bitDepth" class="select-field">
+                    <option value="0">自动跟随 (16 bit)</option>
+                    <option value="16">16 bit</option>
+                    <option value="24">24 bit</option>
+                    <option value="32">32 bit</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- 混音与发送保护设置 -->
+              <details class="advanced">
+                <summary>
+                  <span>混音与发送保护选项</span>
+                </summary>
+                <div class="options-content">
+                  <label class="check">
+                    <input type="checkbox" id="keepMicActive" checked>
+                    <span>保留麦克风原声通道<small>音乐与个人连麦声实时混合输出</small></span>
+                  </label>
+                  <label class="check">
+                    <input type="checkbox" id="forceSend" checked>
+                    <span>持续发送混音数据<small>客户端静音不受影响</small></span>
+                  </label>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <!-- 底部全局控制台条 -->
+        <div class="console-dock action-bar">
+          <div class="audio-route-flow route">
+            <span class="flow-step route-icon">音乐软件声音</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-step route-text">混入你的麦克风</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-step route-dest">频道成员收听</span>
+          </div>
+          <div class="dock-actions action-buttons">
+            <button class="btn secondary" id="audioStop" disabled>停止转播</button>
+            <button class="btn primary-action" id="audioStart">
+              <span>开始声音转播</span>
+            </button>
+          </div>
+        </div>
+        <p class="footnote">独占音频模式可能会阻止捕获，请确认播放器处于共享音频模式。</p>
+      </section>
+
+      <!-- 屏幕共享页面 -->
+      <section class="page" id="screenPage" role="tabpanel" aria-labelledby="screenHeading" hidden>
+        <h1 id="screenHeading" class="visually-hidden">屏幕共享</h1>
+
+        <div class="screen-workbench">
+          <!-- 视频监视器与指标区 -->
+          <div class="stage-section">
+            <div class="stage-card">
+              <div class="stage-header">
+                <div class="stage-status">
+                  <span class="status-dot" id="screenDot"></span>
+                  <span id="screenTitle">准备好你的画面</span>
+                </div>
+                <div class="stage-capsule mono" id="trackFormat">尚未选择来源</div>
+              </div>
+
+              <!-- 播放与捕获视口 -->
+              <div class="stage-viewport" id="stage">
+                <div class="viewport-placeholder" id="stagePlaceholder">
+                  <div class="viewfinder-icon">
+                    <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <rect x="2" y="3" width="20" height="14" rx="2"/>
+                      <line x1="8" y1="21" x2="16" y2="21"/>
+                      <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                  </div>
+                  <div class="placeholder-title">选择屏幕或应用窗口</div>
+                  <div class="placeholder-sub">在右侧选择画质，点击「选择画面并开始共享」调起系统选择器</div>
+                </div>
+                <video id="localVideo" playsinline muted autoplay hidden aria-label="本地画面预览"></video>
+                <video id="remoteVideo" playsinline controls hidden aria-label="远端共享画面"></video>
+                <button id="remotePlay" class="play-overlay" hidden>
+                  <span>点击开始观看画面与声音</span>
+                </button>
+                <span class="preview-tag" id="previewTag" hidden>本地画面预览 · 已静音</span>
+              </div>
+
+              <div class="stage-toolbar">
+                <span class="state-message" id="screenState">开始共享后，同频道成员可直接观看。</span>
+                <div class="stage-actions stage-controls">
+                  <button class="btn-text" id="restartIce" hidden>重连网络</button>
+                  <button class="btn-text" id="fullscreenButton" hidden>全屏沉浸</button>
+                  <button class="btn-text danger" id="stopViewing" hidden>退出观看</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 网络实时指标条 -->
+            <div class="telemetry-card connection-card">
+              <div class="metrics-grid">
+                <div class="metric-cell">
+                  <span class="metric-label">传输协议</span>
+                  <strong class="metric-val mono" id="metricRoute">—</strong>
+                </div>
+                <div class="metric-cell">
+                  <span class="metric-label">画面分辨率</span>
+                  <strong class="metric-val mono" id="metricVideo">—</strong>
+                </div>
+                <div class="metric-cell">
+                  <span class="metric-label">实时码率</span>
+                  <strong class="metric-val mono" id="metricBitrate">—</strong>
+                </div>
+                <div class="metric-cell">
+                  <span class="metric-label">往返延迟</span>
+                  <strong class="metric-val mono" id="metricRtt">—</strong>
+                </div>
+              </div>
+              <div class="metrics-footer">
+                <span class="status-dot" id="pcmDot"></span>
+                <span id="pcmStatus">屏幕音频回声屏蔽机制已就绪</span>
+                <span class="stats-note" id="statsDetail" hidden></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右侧：屏幕流配置与观众权限 -->
+          <div class="sidebar-section">
+            <div class="console-rack share-options">
+              <div class="rack-header">
+                <span class="panel-title">流媒体质量</span>
+              </div>
+              <div class="tuning-grid">
+                <div class="setting-item">
+                  <label for="resolution">画质解析度</label>
+                  <select id="resolution" class="select-field">
+                    <option value="720">720p 流畅</option>
+                    <option value="1080" selected>1080p 高清</option>
+                    <option value="1440">1440p 2K超清</option>
+                    <option value="original">原始屏幕分辨率</option>
+                  </select>
+                </div>
+                <div class="setting-item">
+                  <label for="frameRate">画面帧率</label>
+                  <select id="frameRate" class="select-field">
+                    <option value="15">15 FPS</option>
+                    <option value="30" selected>30 FPS</option>
+                    <option value="60">60 FPS 电竞</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="audio-sync-box">
+                <label class="check">
+                  <input type="checkbox" id="includeAudio" checked>
+                  <span>同步共享系统声音<small>自动排除 TS 语音，无回声困扰</small></span>
+                </label>
+                
+                <div class="setting-item" style="margin-top: 10px;">
+                  <label for="screenAudioMode">声源采集范围</label>
+                  <select id="screenAudioMode" class="select-field">
+                    <option value="exclude-ts">全部系统声音 (自动屏蔽 TS 连麦)</option>
+                    <option value="app">仅共享指定软件声音</option>
+                  </select>
+                </div>
+
+                <div class="setting-item" id="screenAppField" hidden style="margin-top: 8px;">
+                  <label for="screenAudioApp">选择采集软件</label>
+                  <select id="screenAudioApp" class="select-field">
+                    <option value="">请先在音乐页扫描应用</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="stream-trigger-area screen-action-wrap">
+                <button class="btn primary-action full" id="screenStart">
+                  <span>选择画面并开始共享</span>
+                </button>
+                <button class="btn danger full" id="screenStop" hidden>结束屏幕共享</button>
+              </div>
+            </div>
+
+            <!-- 频道其他成员的共享发现 -->
+            <div class="console-rack audience-card">
+              <div class="rack-header">
+                <span class="panel-title" id="audienceTitle">频道中的分享</span>
+                <button class="btn-refresh" id="refreshHosts">
+                  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" stroke-width="2">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                  </svg>
+                  <span>刷新</span>
+                </button>
+              </div>
+              <div id="hostsList" class="hosts-list"></div>
+              <div id="requestsPanel" class="requests-panel" hidden>
+                <span id="requestCount" hidden>0</span>
+                <div id="requestsList" hidden></div>
+                <div class="subheading">正在观看 (<span id="viewerCount">0 / 4</span>)</div>
+                <div id="viewersList"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 底部状态条 -->
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span class="brand-footnote">LocalAudio</span>
+        <span class="separator">/</span>
+        <span id="versionLabel">LocalAudio 2.5.0 · TeamSpeak 内置插件</span>
+      </div>
+      <div class="footer-right">
+        <button class="btn-text" id="diagnosticButton">查看状态</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 网络设置弹窗 -->
+  <dialog id="networkDialog" class="studio-modal">
+    <form method="dialog" id="networkForm" class="modal-form">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3>网络中继与 TURN 设置</h3>
+          <p>优先点对点直连；跨网络穿透失败时可在下方配置 TURN 中继。</p>
+        </div>
+        <button class="btn-close" value="cancel" aria-label="关闭">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="setting-item">
+          <label for="stunUrls">STUN 服务器地址 (换行分隔)</label>
+          <textarea id="stunUrls" rows="2" spellcheck="false" placeholder="留空则自动使用当前 TS 服务器"></textarea>
+        </div>
+        <div class="setting-item">
+          <label for="turnUrls">TURN 中继地址 (换行分隔)</label>
+          <textarea id="turnUrls" rows="2" spellcheck="false" placeholder="留空则自动使用当前 TS 服务器"></textarea>
+        </div>
+        <div class="tuning-grid">
+          <div class="setting-item">
+            <label for="turnUsername">TURN 用户名</label>
+            <input id="turnUsername" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="setting-item">
+            <label for="turnCredential">TURN 密码凭据</label>
+            <input type="password" id="turnCredential" autocomplete="off">
+          </div>
+        </div>
+        <div class="tuning-grid">
+          <div class="setting-item">
+            <label for="iceTransportPolicy">连接方式</label>
+            <select id="iceTransportPolicy" class="select-field">
+              <option value="all">优先直连 · 允许中继</option>
+              <option value="relay">仅使用 TURN 中继</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label for="maxViewers">最多观看人数</label>
+            <select id="maxViewers" class="select-field">
+              <option value="1">1 人</option>
+              <option value="2">2 人</option>
+              <option value="3">3 人</option>
+              <option value="4" selected>4 人</option>
+              <option value="5">5 人</option>
+              <option value="6">6 人</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn secondary" value="cancel">取消</button>
+        <button class="btn primary-action" value="save" id="saveNetwork">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 诊断状态弹窗 -->
+  <dialog id="diagnosticDialog" class="studio-modal">
+    <div class="modal-header">
+      <div class="modal-title-group">
+        <h3>当前状态</h3>
+      </div>
+      <button class="btn-close" id="closeDiagnostic" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <pre id="diagnosticText"></pre>
+    </div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

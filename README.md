@@ -4,7 +4,7 @@
 
 **Design by ningq**
 
-[下载最新版](https://github.com/NingQ197/LocalAudio-Plugin/releases/tag/v2.5.2) · [安装说明](docs/安装与卸载.md) · [源码构建](BUILDING.md)
+[下载最新版](https://github.com/NingQ197/LocalAudio-Plugin/releases) · [安装说明](docs/安装与卸载.md) · [源码构建](BUILDING.md)
 
 ## 选择版本
 
@@ -13,7 +13,7 @@
 | **音频版** | GTCRN / RNNoise 麦克风降噪、应用音频共享 |
 | **屏幕版** | 音频版全部功能，以及屏幕 / 窗口共享 |
 
-**只安装一个版本即可。** 不需要共享画面就选音频版，需要共享画面就选屏幕版。安装包在 [Release 页面](https://github.com/NingQ197/LocalAudio-Plugin/releases/tag/v2.5.2)下载。
+**只安装一个版本即可。** 不需要共享画面就选音频版，需要共享画面就选屏幕版。安装包在 [Release 页面](https://github.com/NingQ197/LocalAudio-Plugin/releases)下载。
 
 ## 运行环境
 

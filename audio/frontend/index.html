@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'none'; connect-src 'none'; worker-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>LocalAudio · 音频版</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <!-- 控制台顶栏 -->
+    <header class="topbar">
+      <div class="header-left">
+        <div class="brand" aria-label="LocalAudio, Design by ningq">
+          <div class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+              <!-- 精致双通道波形/耳机音频图标 -->
+              <path d="M12 3a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h1a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2H5v-2a7 7 0 0 1 14 0v2h-2a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/>
+            </svg>
+          </div>
+          <div class="brand-meta">
+            <span class="brand-title">LocalAudio</span>
+            <span class="brand-sub">Design by ningq</span>
+          </div>
+        </div>
+
+        <div class="tabs" aria-label="音乐声音转播"><div class="tab-group"><span class="tab active">音乐声音转播</span></div></div>
+      </div>
+
+      <div class="header-right">
+        <div class="context-pill" title="当前 TeamSpeak 频道连接状态">
+          <span class="status-dot" id="contextDot"></span>
+          <span id="contextLabel">等待客户端连接</span>
+        </div>
+
+      </div>
+    </header>
+
+    <main class="main-viewport">
+      <!-- 声音共享控制区 -->
+      <section class="page active" id="audioPage" role="tabpanel" aria-labelledby="audioHeading">
+        <h1 id="audioHeading" class="visually-hidden">本地声音共享</h1>
+        
+        <div class="studio-workbench">
+          <!-- 左侧：播放源选择 -->
+          <div class="panel-section source-panel">
+            <div class="panel-header">
+              <span class="panel-title">音频播放源</span>
+              <span id="appCount" class="counter-tag">尚未扫描</span>
+            </div>
+
+            <!-- 常用程序快捷预设 -->
+            <div class="preset-strip" id="presets"></div>
+
+            <!-- 过滤与扫描栏 -->
+            <div class="search-bar">
+              <div class="search-input-wrap">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input id="appSearch" type="search" placeholder="过滤程序或进程名..." autocomplete="off" aria-label="搜索应用">
+              </div>
+              <button class="button secondary scan" id="scanButton" title="重新扫描系统正在播放声音的程序">
+                
+              </button>
+            </div>
+
+            <!-- 程序列表 -->
+            <div class="app-list-container" id="appList" role="region" aria-label="应用列表"></div>
+
+            <!-- 高级手动输入 -->
+            <details class="manual-details">
+              <summary>高级：手动指定 .exe 程序名称</summary>
+              <div class="manual-box">
+                <input id="targetExe" placeholder="例如：foobar2000.exe" spellcheck="false" autocomplete="off">
+              </div>
+            </details>
+          </div>
+
+          <!-- 右侧：通道监听与推流控制 -->
+          <div class="panel-section audio-controls-panel">
+            <!-- 当前选中的播放源展示 -->
+            <div class="channel-monitor-card now-card">
+              <div class="channel-header">
+                <span class="channel-tag">播放器状态</span>
+                <div class="meta-status" id="audioState">
+                  <span class="status-dot"></span>
+                  <span>未开始转播</span>
+                </div>
+              </div>
+              <div class="channel-body">
+                <h2 id="selectedLabel" class="target-title">选择一个应用</h2>
+                <p class="mono target-exe" id="selectedExe">请在左侧选择播放器以混入频道</p>
+              </div>
+            </div>
+
+            <!-- 声音参数控制面板 -->
+            <div class="console-rack volume-card">
+              <div class="rack-header">音乐播放与发送设置</div>
+              
+              <div class="fader-row volume-row">
+                <div class="fader-info">
+                  <span class="fader-label">音乐播放音量</span>
+                  <span class="meter-readout" id="volumeValue">100<span>%</span></span>
+                </div>
+                <p class="fader-help">只调整别人听到的音乐大小，100% 为原始音量。</p>
+                <div class="slider-wrapper">
+                  <input type="range" min="0" max="200" value="100" id="volume" aria-label="共享音量">
+                </div>
+              </div>
+
+              <div class="tuning-grid">
+                <div class="setting-item">
+                  <label for="sampleRate">输出采样率</label>
+                  <select id="sampleRate" class="select-field">
+                    <option value="0">自动跟随 (48000 Hz)</option>
+                    <option value="44100">44100 Hz</option>
+                    <option value="48000">48000 Hz</option>
+                    <option value="96000">96000 Hz</option>
+                  </select>
+                </div>
+                <div class="setting-item">
+                  <label for="bitDepth">采样位深</label>
+                  <select id="bitDepth" class="select-field">
+                    <option value="0">自动跟随 (16 bit)</option>
+                    <option value="16">16 bit</option>
+                    <option value="24">24 bit</option>
+                    <option value="32">32 bit</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- 混音与发送保护设置 -->
+              <details class="advanced">
+                <summary>
+                  <span>混音与发送保护选项</span>
+                </summary>
+                <div class="options-content">
+                  <label class="check">
+                    <input type="checkbox" id="keepMicActive" checked>
+                    <span>保留麦克风原声通道<small>音乐与个人连麦声实时混合输出</small></span>
+                  </label>
+                  <label class="check">
+                    <input type="checkbox" id="forceSend" checked>
+                    <span>持续发送混音数据<small>客户端静音不受影响</small></span>
+                  </label>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <!-- 底部全局控制台条 -->
+        <div class="console-dock action-bar">
+          <div class="audio-route-flow route">
+            <span class="flow-step route-icon">音乐软件声音</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-step route-text">混入你的麦克风</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-step route-dest">频道成员收听</span>
+          </div>
+          <div class="dock-actions action-buttons">
+            <button class="btn secondary" id="audioStop" disabled>停止转播</button>
+            <button class="btn primary-action" id="audioStart">
+              <span>开始声音转播</span>
+            </button>
+          </div>
+        </div>
+        <p class="footnote">独占音频模式可能会阻止捕获，请确认播放器处于共享音频模式。</p>
+      </section>
+
+    </main>
+
+    <!-- 底部状态条 -->
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span class="brand-footnote">LocalAudio</span>
+        <span class="separator">/</span>
+        <span id="versionLabel">LocalAudio 2.5.0 · TeamSpeak 内置插件</span>
+      </div>
+      <div class="footer-right">
+        <button class="btn-text" id="diagnosticButton">查看状态</button>
+      </div>
+    </footer>
+  </div>
+
+  
+
+
+  <!-- 诊断状态弹窗 -->
+  <dialog id="diagnosticDialog" class="studio-modal">
+    <div class="modal-header">
+      <div class="modal-title-group">
+        <h3>当前状态</h3>
+      </div>
+      <button class="btn-close" id="closeDiagnostic" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <pre id="diagnosticText"></pre>
+    </div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
