@@ -1,0 +1,16 @@
+# Installers are GitHub Release attachments, never ordinary Git blobs.
+*.exe
+*.dll
+*.pdb
+*.zip
+*.ts3_plugin
+*.key
+*.pem
+*.pfx
+*.env
+*.db
+*.log
+__pycache__/
+runtime/
+private/
+work/
