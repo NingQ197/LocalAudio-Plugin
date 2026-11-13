@@ -69,3 +69,11 @@ if ((Get-FileHash .\nsis-3.13.zip -Algorithm SHA256).Hash -ne 'BA63DFFC4410EE891
 ```
 
 安装器面向 Windows 10 21H2（19044）及更新的 64 位系统。DLL 与资源目录必须成套部署；资源目录中的 `release-info.json` 记录本次构建文件的哈希。
+
+打包前会校验资源清单中的版本和 edition，以及 UI、降噪运行库、许可和 Loader 的文件集合与哈希。音频版拒绝屏幕版资源或多余文件；明文和加密 UI 不能混用。升级清理清单仍保留旧屏幕资源路径，便于从屏幕版切换到音频版。
+
+可独立运行打包边界回归检查：
+
+```powershell
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
