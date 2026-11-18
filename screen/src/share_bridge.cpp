@@ -455,7 +455,7 @@ void ShareBridgeHandleMessage(const std::string& text) {
             if(type=="audioStart")StopShare("audio-start");
             CaptureController::Get().ApplySettings(s);if(type=="audioStart"&&!CaptureController::Get().Start())Error("无法启动音频采集");ShareBridgeTick();
         } else if(type=="denoiseSave") {
-            const int model=Int(m,"model",0,0,2),strength=Int(m,"strength",70,0,100);
+            const int model=Int(m,"model",0,0,3),strength=Int(m,"strength",70,0,100);
             auto s=LoadSettings(ConfigPath(L"ts3-localaudio.ini"));
             if(!SaveDenoiseSettings(ConfigPath(L"ts3-localaudio.ini"),model,strength)){Error("无法保存降噪配置");return;}
             /* 运行库没加载也允许先存配置：下次启动照样生效，这里只做即时切换 */

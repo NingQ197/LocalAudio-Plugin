@@ -85,7 +85,7 @@ Settings LoadSettings(const std::wstring& path)
         s.volume = 0;
     if (s.volume > 200)
         s.volume = 200;
-    if (s.denoiseModel < 0 || s.denoiseModel > 2)
+    if (s.denoiseModel < 0 || s.denoiseModel > 3)
         s.denoiseModel = 0;
     if (s.denoiseStrength < 0)
         s.denoiseStrength = 0;
@@ -110,7 +110,7 @@ bool SaveSettings(const std::wstring& path, const Settings& s)
     out << "forceSend=" << (s.forceSend ? 1 : 0) << "\n";
     out << "keepMicActive=" << (s.keepMicActive ? 1 : 0) << "\n";
     out << "autoStart=" << (s.autoStart ? 1 : 0) << "\n";
-    out << "# denoiseModel: 0=off 1=GTCRN 2=RNNoise; denoiseStrength: 0-100 dry/wet mix\n";
+    out << "# denoiseModel: 0=off 1=GTCRN 2=RNNoise 3=DPDFNet2(48kHz); denoiseStrength: 0-100 dry/wet mix\n";
     out << "denoiseModel=" << s.denoiseModel << "\n";
     out << "denoiseStrength=" << s.denoiseStrength << "\n";
 
@@ -137,7 +137,7 @@ bool SaveAudioSettings(const std::wstring& path,const Settings& audio)
 }
 bool SaveDenoiseSettings(const std::wstring& path,int model,int strength)
 {
-    if(model<0||model>2||strength<0||strength>100)return false;
+    if(model<0||model>3||strength<0||strength>100)return false;
     std::lock_guard<std::recursive_mutex> lock(settingsMutex);
     auto merged=LoadSettings(path);merged.denoiseModel=model;merged.denoiseStrength=strength;
     return SaveSettings(path,merged);

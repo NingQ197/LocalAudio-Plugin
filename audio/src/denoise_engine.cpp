@@ -47,7 +47,7 @@ struct Sherpa {
 };
 struct Channel {
     DenoiseState* rn=nullptr;
-    const SherpaOnnxOnlineSpeechDenoiser* gt=nullptr;
+    const SherpaOnnxOnlineSpeechDenoiser* sd=nullptr;
     const SherpaOnnxLinearResampler* up=nullptr;
     std::deque<float> wet,dry,strength;
     float amount=-1;
@@ -96,28 +96,35 @@ struct DenoiseStream::Impl {
     std::unique_ptr<Sherpa> sherpa;
     std::array<Channel,kMaxChannels> state;
     Impl(const std::wstring& directory,int m,int c):model(m),channels(c){
-        if(c<1||c>2||(m!=1&&m!=2))throw std::runtime_error("unsupported denoise stream");
+        if(c<1||c>2||(m!=1&&m!=2&&m!=3))throw std::runtime_error("unsupported denoise stream");
         try{
-            if(model==1)sherpa=std::make_unique<Sherpa>(directory);
+            if(model==1||model==3)sherpa=std::make_unique<Sherpa>(directory);
             for(int i=0;i<channels;++i){auto& ch=state[i];
                 if(model==2){ch.rn=rnnoise_create(nullptr);if(!ch.rn)throw std::bad_alloc();}
-                else {
+                else if(model==3){
+                    SherpaOnnxOnlineSpeechDenoiserConfig cfg{};
+                    const auto file=WideToUtf8(directory+L"\\dpdfnet2_48khz_hr.onnx");
+                    cfg.model.dpdfnet.model=file.c_str();cfg.model.num_threads=1;cfg.model.provider="cpu";
+                    ch.sd=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
+                    if(!ch.sd)throw std::runtime_error("DPDFNet initialization failed");
+                }else {
                     SherpaOnnxOnlineSpeechDenoiserConfig cfg{};
                     const auto file=WideToUtf8(directory+L"\\gtcrn_simple.onnx");
                     cfg.model.gtcrn.model=file.c_str();cfg.model.num_threads=1;cfg.model.provider="cpu";
-                    ch.gt=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
+                    ch.sd=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
                     ch.up=sherpa->SherpaOnnxCreateLinearResamplerFn(16000,48000,7200,6);
-                    if(!ch.gt||!ch.up)throw std::runtime_error("GTCRN initialization failed");
+                    if(!ch.sd||!ch.up)throw std::runtime_error("GTCRN initialization failed");
                 }
             }
             reset();
         }catch(...){destroy();throw;}
     }
-    void destroy(){for(auto& ch:state){if(ch.rn){rnnoise_destroy(ch.rn);ch.rn=nullptr;}if(ch.gt){sherpa->SherpaOnnxDestroyOnlineSpeechDenoiserFn(ch.gt);ch.gt=nullptr;}if(ch.up){sherpa->SherpaOnnxDestroyLinearResamplerFn(ch.up);ch.up=nullptr;}}}
+    void destroy(){for(auto& ch:state){if(ch.rn){rnnoise_destroy(ch.rn);ch.rn=nullptr;}if(ch.sd){sherpa->SherpaOnnxDestroyOnlineSpeechDenoiserFn(ch.sd);ch.sd=nullptr;}if(ch.up){sherpa->SherpaOnnxDestroyLinearResamplerFn(ch.up);ch.up=nullptr;}}}
     ~Impl(){destroy();}
     void reset(){for(int i=0;i<channels;++i){auto& ch=state[i];ch.wet.clear();ch.dry.clear();ch.strength.clear();ch.amount=-1;
         if(model==2){rnnoise_init(ch.rn,nullptr);ch.dry.insert(ch.dry.end(),960,0.0f);ch.strength.insert(ch.strength.end(),960,1.0f);}
-        else {sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.gt);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);}
+        else if(model==3){sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);ch.dry.insert(ch.dry.end(),1920,0.0f);ch.strength.insert(ch.strength.end(),1920,1.0f);}
+        else {sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);}
     }}
 };
 DenoiseStream::DenoiseStream(const std::wstring& root,int model,int channels):impl_(new Impl(root,model,channels)){}
@@ -130,11 +137,16 @@ void DenoiseStream::Feed(const float* audio,int frames,float strength){
         for(int i=0;i<frames;++i){const float value=audio[i*impl_->channels+c];input[i]=std::isfinite(value)?std::clamp(value,-1.0f,1.0f):0.0f;ch.dry.push_back(input[i]);if(ch.amount<0)ch.amount=strength;else ch.amount+=(strength-ch.amount)*.004f;ch.strength.push_back(ch.amount);}
         if(impl_->model==2){for(auto& x:input)x*=32768.0f;rnnoise_process_frame(ch.rn,out.data(),input.data());for(float x:out)ch.wet.push_back(x/32768.0f);}
         else {
-            const auto* enhanced=impl_->sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(ch.gt,input.data(),frames,48000);
+            const auto* enhanced=impl_->sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(ch.sd,input.data(),frames,48000);
             if(enhanced){
-                if(enhanced->sample_rate!=16000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error("unexpected GTCRN sample rate");}
-                const auto* resampled=impl_->sherpa->SherpaOnnxLinearResamplerResampleFn(ch.up,enhanced->samples,enhanced->n,0);
-                if(resampled){for(int i=0;i<resampled->n;++i)ch.wet.push_back(resampled->samples[i]);impl_->sherpa->SherpaOnnxLinearResamplerResampleFreeFn(resampled);}
+                if(impl_->model==3){
+                    if(enhanced->sample_rate!=48000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error("unexpected DPDFNet sample rate");}
+                    for(int i=0;i<enhanced->n;++i)ch.wet.push_back(enhanced->samples[i]);
+                }else{
+                    if(enhanced->sample_rate!=16000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error("unexpected GTCRN sample rate");}
+                    const auto* resampled=impl_->sherpa->SherpaOnnxLinearResamplerResampleFn(ch.up,enhanced->samples,enhanced->n,0);
+                    if(resampled){for(int i=0;i<resampled->n;++i)ch.wet.push_back(resampled->samples[i]);impl_->sherpa->SherpaOnnxLinearResamplerResampleFreeFn(resampled);}
+                }
                 impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);
             }
         }
@@ -151,7 +163,7 @@ size_t DenoiseStream::Read(float* audio,size_t frames){
 bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
     if(control)return false;
     auto c=std::make_unique<Controller>();if(!c->wake)return false;c->root=runtime;
-    c->model=std::clamp(model,0,2);
+    c->model=std::clamp(model,0,3);
     c->strength=std::clamp(strength,0,100);
     control=std::move(c);auto* ptr=control.get();
     try{ptr->worker=std::thread([ptr]{
@@ -191,7 +203,7 @@ bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
 void ShutdownDenoise(){if(!control)return;control->stopping=true;SetEvent(control->wake);if(control->worker.joinable())control->worker.join();control.reset();}
 DenoiseConfig GetDenoiseConfig(){return control?DenoiseConfig{control->model.load(),control->strength.load()}:DenoiseConfig{};}
 bool SetDenoiseConfig(int model,int strength){
-    if(!control||model<0||model>2||strength<0||strength>100)return false;
+    if(!control||model<0||model>3||strength<0||strength>100)return false;
     const int old=control->model.exchange(model);
     control->strength=strength;control->failure=false;control->overloads=0;
     if(old!=model)control->revision.fetch_add(1);

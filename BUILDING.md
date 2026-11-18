@@ -19,7 +19,7 @@
 
 构建依赖锁定为 CPython 3.12 / Windows x64 的固定 wheel 版本和 SHA256；pip 会拒绝不匹配的载荷。后续 Python 构建命令均显式使用此虚拟环境，无需更改 PowerShell 执行策略。
 
-下载脚本校验固定版本依赖的 SHA256，包括 RNNoise v0.2、模型数据、nlohmann/json 3.12.0、WebView2 SDK、Sherpa-ONNX 2.0.1 和 GTCRN 模型。`third_party/ts3sdk` 提供插件 API 26 声明；`third_party/sherpa/c-api.h` 提供动态加载声明。
+下载脚本校验固定版本依赖的 SHA256，包括 RNNoise v0.2、模型数据、nlohmann/json 3.12.0、WebView2 SDK、Sherpa-ONNX 2.0.1、GTCRN 模型与 DPDFNet 2 (48kHz) 模型。`third_party/ts3sdk` 提供插件 API 26 声明；`third_party/sherpa/c-api.h` 提供动态加载声明。
 
 ## 1. 编译原生 Qt 界面桥
 

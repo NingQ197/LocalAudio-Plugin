@@ -5,8 +5,8 @@ R=Path(__file__).resolve().parent.parent
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 UI_NAMES=('index.html','styles.css','app.js')
 SCREEN_UI_NAMES=('rtc.js','pcm.js','pcm-worklet.js')
-RUNTIME_NAMES=('ningq_denoise_ui.dll','sherpa-onnx-c-api.dll','onnxruntime.dll','onnxruntime_providers_shared.dll','gtcrn_simple.onnx')
-LICENSE_NAMES=('GTCRN-MIT.txt','Microsoft-WebView2.txt','nlohmann-json-MIT.txt','ONNX-Runtime-MIT.txt','ONNX-Runtime-ThirdPartyNotices.txt','Qt-GPL-3.0.txt','Qt-LGPL-3.0.txt','Qt-NOTICE.txt','RNNoise-BSD-3-Clause.txt','Sherpa-ONNX-Apache-2.0.txt','WebView2-NOTICE.txt')
+RUNTIME_NAMES=('ningq_denoise_ui.dll','sherpa-onnx-c-api.dll','onnxruntime.dll','onnxruntime_providers_shared.dll','gtcrn_simple.onnx','dpdfnet2_48khz_hr.onnx')
+LICENSE_NAMES=('DPDFNet-Apache-2.0.txt','GTCRN-MIT.txt','Microsoft-WebView2.txt','nlohmann-json-MIT.txt','ONNX-Runtime-MIT.txt','ONNX-Runtime-ThirdPartyNotices.txt','Qt-GPL-3.0.txt','Qt-LGPL-3.0.txt','Qt-NOTICE.txt','RNNoise-BSD-3-Clause.txt','Sherpa-ONNX-Apache-2.0.txt','WebView2-NOTICE.txt')
 
 def checked_path(path,directory=False):
  """Reject links and Windows reparse points before reading build inputs."""

@@ -10,7 +10,7 @@
 
 | 版本 | 包含功能 |
 | --- | --- |
-| **音频版** | GTCRN / RNNoise 麦克风降噪、应用音频共享 |
+| **音频版** | DPDFNet (48kHz) / GTCRN / RNNoise 麦克风降噪、应用音频共享 |
 | **屏幕版** | 音频版全部功能，以及屏幕 / 窗口共享 |
 
 **只安装一个版本即可。** 不需要共享画面就选音频版，需要共享画面就选屏幕版。安装包在 [Release 页面](https://github.com/NingQ197/LocalAudio-Plugin/releases)下载。
@@ -39,7 +39,7 @@
 
 ### AI 麦克风降噪
 
-在 **选项 → 音频输入** 中选择 **GTCRN** 或 **RNNoise**，再调整降噪强度。它只处理麦克风，分享的音乐保持原样。建议关闭 TS 自带的背景降噪，避免重复处理。
+在 **选项 → 音频输入** 中选择 **DPDFNet (48kHz)**、**GTCRN** 或 **RNNoise**，再调整降噪强度。它只处理麦克风，分享的音乐保持原样。建议关闭 TS 自带的背景降噪，避免重复处理。
 
 ### 音频共享
 
@@ -67,7 +67,7 @@
 
 项目源码采用 [MIT 许可证](LICENSE)，欢迎使用、修改和贡献代码。第三方组件遵循各自的许可条款；应用商标和创作者图片不包含在代码许可证内。
 
-感谢 RNNoise、GTCRN、Sherpa-ONNX、ONNX Runtime 等开源项目。相关第三方许可见 `third_party/` 和 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。
+感谢 RNNoise、DPDFNet、GTCRN、Sherpa-ONNX、ONNX Runtime 等开源项目。相关第三方许可见 `third_party/` 和 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。
 
 ## 爱发电
 
