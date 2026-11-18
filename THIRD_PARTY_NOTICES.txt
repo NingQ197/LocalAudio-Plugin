@@ -23,7 +23,7 @@ License: GTCRN-MIT.txt
 DPDFNet — Apache-2.0
 Copyright Ceva-IP / Daniel Rika, Nino Sapir, Ido Gus.
 https://github.com/ceva-ip/DPDFNet
-The converted model (dpdfnet2_48khz_hr.onnx) is obtained from the Sherpa-ONNX enhancement model release:
+The converted model (dpdfnet_baseline.onnx) is obtained from the Sherpa-ONNX enhancement model release:
 https://github.com/k2-fsa/sherpa-onnx/releases/tag/speech-enhancement-models
 License: DPDFNet-Apache-2.0.txt
 

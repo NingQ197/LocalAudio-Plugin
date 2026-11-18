@@ -103,10 +103,11 @@ struct DenoiseStream::Impl {
                 if(model==2){ch.rn=rnnoise_create(nullptr);if(!ch.rn)throw std::bad_alloc();}
                 else if(model==3){
                     SherpaOnnxOnlineSpeechDenoiserConfig cfg{};
-                    const auto file=WideToUtf8(directory+L"\\dpdfnet2_48khz_hr.onnx");
+                    const auto file=WideToUtf8(directory+L"\\dpdfnet_baseline.onnx");
                     cfg.model.dpdfnet.model=file.c_str();cfg.model.num_threads=1;cfg.model.provider="cpu";
                     ch.sd=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
-                    if(!ch.sd)throw std::runtime_error("DPDFNet initialization failed");
+                    ch.up=sherpa->SherpaOnnxCreateLinearResamplerFn(16000,48000,7200,6);
+                    if(!ch.sd||!ch.up)throw std::runtime_error("DPDFNet initialization failed");
                 }else {
                     SherpaOnnxOnlineSpeechDenoiserConfig cfg{};
                     const auto file=WideToUtf8(directory+L"\\gtcrn_simple.onnx");
@@ -116,6 +117,16 @@ struct DenoiseStream::Impl {
                     if(!ch.sd||!ch.up)throw std::runtime_error("GTCRN initialization failed");
                 }
             }
+            // Warm up ONNX Runtime sessions off the audio deadline so first live frames do not stall.
+            if(model==1||model==3){
+                std::array<float,kFrame> zero{};
+                for(int i=0;i<channels;++i){
+                    for(int w=0;w<4;++w){
+                        const auto* warmed=sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(state[i].sd,zero.data(),kFrame,48000);
+                        if(warmed)sherpa->SherpaOnnxDestroyDenoisedAudioFn(warmed);
+                    }
+                }
+            }
             reset();
         }catch(...){destroy();throw;}
     }
@@ -123,7 +134,9 @@ struct DenoiseStream::Impl {
     ~Impl(){destroy();}
     void reset(){for(int i=0;i<channels;++i){auto& ch=state[i];ch.wet.clear();ch.dry.clear();ch.strength.clear();ch.amount=-1;
         if(model==2){rnnoise_init(ch.rn,nullptr);ch.dry.insert(ch.dry.end(),960,0.0f);ch.strength.insert(ch.strength.end(),960,1.0f);}
-        else if(model==3){sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);ch.dry.insert(ch.dry.end(),1920,0.0f);ch.strength.insert(ch.strength.end(),1920,1.0f);}
+        // DPDFNet adds 30 ms internal causal lookahead on top of the 10 ms STFT startup hop
+        // (40 ms = 1920 samples at 48 kHz; GetFrameShiftInSamples only reports the STFT hop).
+        else if(model==3){sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);ch.dry.insert(ch.dry.end(),1920,0.0f);ch.strength.insert(ch.strength.end(),1920,1.0f);}
         else {sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);}
     }}
 };
@@ -139,14 +152,9 @@ void DenoiseStream::Feed(const float* audio,int frames,float strength){
         else {
             const auto* enhanced=impl_->sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(ch.sd,input.data(),frames,48000);
             if(enhanced){
-                if(impl_->model==3){
-                    if(enhanced->sample_rate!=48000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error("unexpected DPDFNet sample rate");}
-                    for(int i=0;i<enhanced->n;++i)ch.wet.push_back(enhanced->samples[i]);
-                }else{
-                    if(enhanced->sample_rate!=16000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error("unexpected GTCRN sample rate");}
-                    const auto* resampled=impl_->sherpa->SherpaOnnxLinearResamplerResampleFn(ch.up,enhanced->samples,enhanced->n,0);
-                    if(resampled){for(int i=0;i<resampled->n;++i)ch.wet.push_back(resampled->samples[i]);impl_->sherpa->SherpaOnnxLinearResamplerResampleFreeFn(resampled);}
-                }
+                if(enhanced->sample_rate!=16000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error(impl_->model==3?"unexpected DPDFNet sample rate":"unexpected GTCRN sample rate");}
+                const auto* resampled=impl_->sherpa->SherpaOnnxLinearResamplerResampleFn(ch.up,enhanced->samples,enhanced->n,0);
+                if(resampled){for(int i=0;i<resampled->n;++i)ch.wet.push_back(resampled->samples[i]);impl_->sherpa->SherpaOnnxLinearResamplerResampleFreeFn(resampled);}
                 impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);
             }
         }

@@ -110,7 +110,7 @@ bool SaveSettings(const std::wstring& path, const Settings& s)
     out << "forceSend=" << (s.forceSend ? 1 : 0) << "\n";
     out << "keepMicActive=" << (s.keepMicActive ? 1 : 0) << "\n";
     out << "autoStart=" << (s.autoStart ? 1 : 0) << "\n";
-    out << "# denoiseModel: 0=off 1=GTCRN 2=RNNoise 3=DPDFNet2(48kHz); denoiseStrength: 0-100 dry/wet mix\n";
+    out << "# denoiseModel: 0=off 1=GTCRN 2=RNNoise 3=DPDFNet; denoiseStrength: 0-100 dry/wet mix\n";
     out << "denoiseModel=" << s.denoiseModel << "\n";
     out << "denoiseStrength=" << s.denoiseStrength << "\n";
 

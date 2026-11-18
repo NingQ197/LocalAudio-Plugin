@@ -86,7 +86,7 @@ public:
         auto* brand=new QLabel("Design by ningq",this);brand->setObjectName("ningqGuideBrand");steps->addWidget(brand);layout->addLayout(steps);
         pages=new QStackedWidget(this);pages->setObjectName("ningqGuidePages");
         pages->addWidget(page(QString::fromUtf8("先让麦克风声音更清楚"),
-          QString::fromUtf8("打开 <b>工具 → 选项 → 音频输入</b>，找到“AI 麦克风降噪”。<br><br>选择 <b>DPDFNet (48kHz)</b>、<b>GTCRN</b> 或 <b>RNNoise</b>，再调整“降噪强度”，点击“应用”保存。<br><br>建议从 <b>70%</b> 开始，试听说话效果；人声变闷或被削弱时，适当降低强度。"),
+          QString::fromUtf8("打开 <b>工具 → 选项 → 音频输入</b>，找到“AI 麦克风降噪”。<br><br>选择 <b>DPDFNet</b>、<b>GTCRN</b> 或 <b>RNNoise</b>，再调整“降噪强度”，点击“应用”保存。<br><br>建议从 <b>70%</b> 开始，试听说话效果；人声变闷或被削弱时，适当降低强度。"),
           QString::fromUtf8("只处理你的麦克风，分享的音乐保持原样。建议关闭 TS 自带“消除背景噪音”，避免重复降噪。")));
         pages->addWidget(page(QString::fromUtf8("把正在播放的音乐分享给频道"),
           QString::fromUtf8("从 TS 的 <b>插件菜单</b> 打开 <b>LocalAudio</b>。<br><br>选择 <b>QQ 音乐、网易云音乐、Edge 或 Chrome</b>；找不到目标程序时点击“扫描应用”，再选择带图标的应用。<br><br>在该应用中播放音乐，然后点击 <b>“开始声音转播”</b>。频道成员即可收听，结束时点击“停止转播”。"),
@@ -173,10 +173,10 @@ public:
         auto* layout=new QVBoxLayout(this);layout->setContentsMargins(12,10,12,10);layout->setSpacing(8);
         auto* models=new QHBoxLayout;
         off=new QRadioButton(QString::fromUtf8("关闭"),this);off->setObjectName("ningqAiModelOff");
-        dp=new QRadioButton("DPDFNet (48kHz)",this);dp->setObjectName("ningqAiModelDPDFNet");
+        dp=new QRadioButton("DPDFNet",this);dp->setObjectName("ningqAiModelDPDFNet");
         gt=new QRadioButton("GTCRN",this);gt->setObjectName("ningqAiModelGTCRN");
         rn=new QRadioButton("RNNoise",this);rn->setObjectName("ningqAiModelRNNoise");
-        dp->setToolTip(QString::fromUtf8("DPDFNet 2 使用 48 kHz 全频带高保真降噪模型，保留完整人声高频。"));
+        dp->setToolTip(QString::fromUtf8("DPDFNet 使用 16 kHz 深度滤波降噪模型，复杂底噪抑制强于 GTCRN，完整输出会减少高频成分。"));
         gt->setToolTip(QString::fromUtf8("GTCRN 使用 16 kHz 轻量人声模型，完整输出会减少高频成分。"));
         rn->setToolTip(QString::fromUtf8("RNNoise 使用 48 kHz 经典轻量实时降噪模型。"));
         models->addWidget(off);models->addWidget(dp);models->addWidget(gt);models->addWidget(rn);models->addStretch();layout->addLayout(models);

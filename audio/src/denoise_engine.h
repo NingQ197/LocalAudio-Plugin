@@ -5,7 +5,7 @@
 #include <vector>
 
 namespace la {
-enum class NoiseModel : int { Off=0, Gtcrn=1, Rnnoise=2, Dpdfnet2=3 };
+enum class NoiseModel : int { Off=0, Gtcrn=1, Rnnoise=2, Dpdfnet=3 };
 struct DenoiseConfig { int model=0; int strength=70; };
 // Processing implementation used by both the live worker and offline tests.
 class DenoiseStream {
