@@ -17,6 +17,7 @@
 namespace la {
 namespace {
 constexpr int kFrame=480, kMaxChannels=2;
+constexpr int kDpdfnetDelayBlocks = 4;
 struct Sherpa {
     HMODULE dll=nullptr;
 #define API(name) decltype(&name) name##Fn=nullptr
@@ -47,7 +48,7 @@ struct Sherpa {
 };
 struct Channel {
     DenoiseState* rn=nullptr;
-    const SherpaOnnxOnlineSpeechDenoiser* gt=nullptr;
+    const SherpaOnnxOnlineSpeechDenoiser* sd=nullptr;
     const SherpaOnnxLinearResampler* up=nullptr;
     std::deque<float> wet,dry,strength;
     float amount=-1;
@@ -72,6 +73,7 @@ struct CapturePort {
     uint64_t lastRevision=0;
     DWORD lastUsed=0;
     int inPosition=0,outPosition=kFrame;
+    int fadeSamplesRemaining=0;
     unsigned misses=0;
     bool bypassed=true,primed=false;
     Packet pending,current;
@@ -96,28 +98,48 @@ struct DenoiseStream::Impl {
     std::unique_ptr<Sherpa> sherpa;
     std::array<Channel,kMaxChannels> state;
     Impl(const std::wstring& directory,int m,int c):model(m),channels(c){
-        if(c<1||c>2||(m!=1&&m!=2))throw std::runtime_error("unsupported denoise stream");
+        if(c<1||c>2||(m!=1&&m!=2&&m!=3))throw std::runtime_error("unsupported denoise stream");
         try{
-            if(model==1)sherpa=std::make_unique<Sherpa>(directory);
+            if(model==1||model==3)sherpa=std::make_unique<Sherpa>(directory);
             for(int i=0;i<channels;++i){auto& ch=state[i];
                 if(model==2){ch.rn=rnnoise_create(nullptr);if(!ch.rn)throw std::bad_alloc();}
-                else {
+                else if(model==3){
+                    SherpaOnnxOnlineSpeechDenoiserConfig cfg{};
+                    const auto file=WideToUtf8(directory+L"\\dpdfnet_baseline.onnx");
+                    cfg.model.dpdfnet.model=file.c_str();cfg.model.num_threads=1;cfg.model.provider="cpu";
+                    ch.sd=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
+                    ch.up=sherpa->SherpaOnnxCreateLinearResamplerFn(16000,48000,7200,6);
+                    if(!ch.sd||!ch.up)throw std::runtime_error("DPDFNet initialization failed");
+                }else {
                     SherpaOnnxOnlineSpeechDenoiserConfig cfg{};
                     const auto file=WideToUtf8(directory+L"\\gtcrn_simple.onnx");
                     cfg.model.gtcrn.model=file.c_str();cfg.model.num_threads=1;cfg.model.provider="cpu";
-                    ch.gt=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
+                    ch.sd=sherpa->SherpaOnnxCreateOnlineSpeechDenoiserFn(&cfg);
                     ch.up=sherpa->SherpaOnnxCreateLinearResamplerFn(16000,48000,7200,6);
-                    if(!ch.gt||!ch.up)throw std::runtime_error("GTCRN initialization failed");
+                    if(!ch.sd||!ch.up)throw std::runtime_error("GTCRN initialization failed");
+                }
+            }
+            // Warm up ONNX Runtime sessions off the audio deadline so first live frames do not stall.
+            if(model==1||model==3){
+                std::array<float,kFrame> zero{};
+                for(int i=0;i<channels;++i){
+                    for(int w=0;w<4;++w){
+                        const auto* warmed=sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(state[i].sd,zero.data(),kFrame,48000);
+                        if(warmed)sherpa->SherpaOnnxDestroyDenoisedAudioFn(warmed);
+                    }
                 }
             }
             reset();
         }catch(...){destroy();throw;}
     }
-    void destroy(){for(auto& ch:state){if(ch.rn){rnnoise_destroy(ch.rn);ch.rn=nullptr;}if(ch.gt){sherpa->SherpaOnnxDestroyOnlineSpeechDenoiserFn(ch.gt);ch.gt=nullptr;}if(ch.up){sherpa->SherpaOnnxDestroyLinearResamplerFn(ch.up);ch.up=nullptr;}}}
+    void destroy(){for(auto& ch:state){if(ch.rn){rnnoise_destroy(ch.rn);ch.rn=nullptr;}if(ch.sd){sherpa->SherpaOnnxDestroyOnlineSpeechDenoiserFn(ch.sd);ch.sd=nullptr;}if(ch.up){sherpa->SherpaOnnxDestroyLinearResamplerFn(ch.up);ch.up=nullptr;}}}
     ~Impl(){destroy();}
     void reset(){for(int i=0;i<channels;++i){auto& ch=state[i];ch.wet.clear();ch.dry.clear();ch.strength.clear();ch.amount=-1;
         if(model==2){rnnoise_init(ch.rn,nullptr);ch.dry.insert(ch.dry.end(),960,0.0f);ch.strength.insert(ch.strength.end(),960,1.0f);}
-        else {sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.gt);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);}
+        // DPDFNet adds 30 ms internal causal lookahead on top of the 10 ms STFT startup hop
+        // (40 ms = 1920 samples at 48 kHz; GetFrameShiftInSamples only reports the STFT hop).
+        else if(model==3){sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);ch.dry.insert(ch.dry.end(),kDpdfnetDelayBlocks*kFrame,0.0f);ch.strength.insert(ch.strength.end(),kDpdfnetDelayBlocks*kFrame,1.0f);}
+        else {sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);}
     }}
 };
 DenoiseStream::DenoiseStream(const std::wstring& root,int model,int channels):impl_(new Impl(root,model,channels)){}
@@ -130,9 +152,9 @@ void DenoiseStream::Feed(const float* audio,int frames,float strength){
         for(int i=0;i<frames;++i){const float value=audio[i*impl_->channels+c];input[i]=std::isfinite(value)?std::clamp(value,-1.0f,1.0f):0.0f;ch.dry.push_back(input[i]);if(ch.amount<0)ch.amount=strength;else ch.amount+=(strength-ch.amount)*.004f;ch.strength.push_back(ch.amount);}
         if(impl_->model==2){for(auto& x:input)x*=32768.0f;rnnoise_process_frame(ch.rn,out.data(),input.data());for(float x:out)ch.wet.push_back(x/32768.0f);}
         else {
-            const auto* enhanced=impl_->sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(ch.gt,input.data(),frames,48000);
+            const auto* enhanced=impl_->sherpa->SherpaOnnxOnlineSpeechDenoiserRunFn(ch.sd,input.data(),frames,48000);
             if(enhanced){
-                if(enhanced->sample_rate!=16000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error("unexpected GTCRN sample rate");}
+                if(enhanced->sample_rate!=16000){impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);throw std::runtime_error(impl_->model==3?"unexpected DPDFNet sample rate":"unexpected GTCRN sample rate");}
                 const auto* resampled=impl_->sherpa->SherpaOnnxLinearResamplerResampleFn(ch.up,enhanced->samples,enhanced->n,0);
                 if(resampled){for(int i=0;i<resampled->n;++i)ch.wet.push_back(resampled->samples[i]);impl_->sherpa->SherpaOnnxLinearResamplerResampleFreeFn(resampled);}
                 impl_->sherpa->SherpaOnnxDestroyDenoisedAudioFn(enhanced);
@@ -151,11 +173,18 @@ size_t DenoiseStream::Read(float* audio,size_t frames){
 bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
     if(control)return false;
     auto c=std::make_unique<Controller>();if(!c->wake)return false;c->root=runtime;
-    c->model=std::clamp(model,0,2);
+    c->model=std::clamp(model,0,3);
     c->strength=std::clamp(strength,0,100);
     control=std::move(c);auto* ptr=control.get();
     try{ptr->worker=std::thread([ptr]{
-        struct Lane {std::unique_ptr<DenoiseStream> stream;uint64_t epoch=0;int model=0,channels=0;std::array<float,kFrame*kMaxChannels> assembled{};size_t count=0;};
+        struct Lane {
+            std::unique_ptr<DenoiseStream> stream;
+            uint64_t epoch=0;
+            int model=0,channels=0;
+            std::array<float,kFrame*kMaxChannels> assembled{};
+            size_t count=0;
+            int startupBlocks=0;
+        };
         std::array<Lane,4> lanes;
         while(!ptr->stopping.load(std::memory_order_acquire)){
             const int desired=ptr->model.load(std::memory_order_acquire);
@@ -173,14 +202,26 @@ bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
             auto& port=ptr->ports[in.slot];auto& lane=lanes[in.slot];
             if(in.epoch!=port.epoch.load()||in.model!=desired||in.channels!=lane.channels||in.model!=lane.model)continue;
             try{
-                if(in.epoch!=lane.epoch){lane.stream->Reset();lane.epoch=in.epoch;lane.count=0;}
+                if(in.epoch!=lane.epoch){
+                    lane.stream->Reset();
+                    lane.epoch=in.epoch;
+                    lane.count=0;
+                    lane.startupBlocks=in.model==static_cast<int>(NoiseModel::Dpdfnet)?kDpdfnetDelayBlocks:0;
+                }
                 lane.stream->Feed(in.audio.data(),kFrame,in.strength/100.0f);
                 Packet out;out.epoch=in.epoch;out.model=in.model;out.channels=in.channels;out.slot=in.slot;
                 // Partial reads are retained until a complete TS capture block exists.
                 for(;;){
                     lane.count+=lane.stream->Read(lane.assembled.data()+lane.count*lane.channels,kFrame-lane.count);
                     if(lane.count<kFrame)break;
-                    std::copy_n(lane.assembled.data(),kFrame*lane.channels,out.audio.data());lane.count=0;
+                    lane.count=0;
+                    // Keep the dry/wet alignment in the stream, but do not play
+                    // DPDFNet's leading delay while live microphone audio is available.
+                    if(lane.startupBlocks>0){
+                        --lane.startupBlocks;
+                        continue;
+                    }
+                    std::copy_n(lane.assembled.data(),kFrame*lane.channels,out.audio.data());
                     if(!port.output.push(out)){ptr->overloads++;ptr->failure=true;break;}
                 }
             }catch(...){ptr->failure=true;lane.stream.reset();lane.model=0;port.loadedModel=0;}
@@ -191,10 +232,11 @@ bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
 void ShutdownDenoise(){if(!control)return;control->stopping=true;SetEvent(control->wake);if(control->worker.joinable())control->worker.join();control.reset();}
 DenoiseConfig GetDenoiseConfig(){return control?DenoiseConfig{control->model.load(),control->strength.load()}:DenoiseConfig{};}
 bool SetDenoiseConfig(int model,int strength){
-    if(!control||model<0||model>2||strength<0||strength>100)return false;
+    if(!control||model<0||model>3||strength<0||strength>100)return false;
     const int old=control->model.exchange(model);
-    control->strength=strength;control->failure=false;control->overloads=0;
-    if(old!=model)control->revision.fetch_add(1);
+    const int oldStrength=control->strength.exchange(strength);
+    control->failure=false;control->overloads=0;
+    if(old!=model||(oldStrength==0)!=(strength==0))control->revision.fetch_add(1);
     SetEvent(control->wake);
     return true;
 }
@@ -231,23 +273,37 @@ bool ProcessDenoise(uint64_t handler,short* samples,int frames,int channels){
     const auto revision=c->revision.load(std::memory_order_acquire);
     if(p.bypassed||revision!=p.lastRevision){
         p.epoch.fetch_add(1);p.lastRevision=revision;p.inPosition=0;p.outPosition=kFrame;p.bypassed=false;p.primed=false;p.misses=0;
+        p.fadeSamplesRemaining=kFrame-1;
         Packet stale;while(p.output.pop(stale)){}
     }
+    bool edited=false;
     for(int i=0;i<frames;++i){
         for(int ch=0;ch<channels;++ch)p.pending.audio[p.inPosition*channels+ch]=samples[i*channels+ch]/32768.0f;
         ++p.inPosition;
-        if(p.inPosition==kFrame){p.pending.epoch=p.epoch.load();p.pending.model=model;p.pending.channels=channels;p.pending.strength=strength;p.pending.slot=slot;if(!c->input.push(p.pending)){c->overloads++;c->failure=true;p.bypassed=true;return i>0;}p.inPosition=0;SetEvent(c->wake);}
-        if(!p.primed&&p.output.size()>=4)p.primed=true;
-        if(p.primed&&p.outPosition==kFrame){
+        if(p.inPosition==kFrame){p.pending.epoch=p.epoch.load();p.pending.model=model;p.pending.channels=channels;p.pending.strength=strength;p.pending.slot=slot;if(!c->input.push(p.pending)){c->overloads++;c->failure=true;p.bypassed=true;return edited;}p.inPosition=0;SetEvent(c->wake);}
+        if(!p.primed&&p.output.size()<4)continue;
+        if(p.outPosition==kFrame){
             while(p.output.pop(p.current)){if(p.current.epoch==p.epoch.load()&&p.current.channels==channels){p.outPosition=0;p.misses=0;break;}}
             // Once streaming has started, a missed inference deadline must not
             // turn microphone speech into silent blocks. Preserve the original
             // remainder; repeated missed deadlines disable inference safely.
-            if(p.outPosition==kFrame){c->overloads++;if(++p.misses>=3){c->failure=true;p.bypassed=true;}return i>0;}
+            if(p.outPosition==kFrame){
+                if(!p.primed)continue;
+                c->overloads++;if(++p.misses>=3){c->failure=true;p.bypassed=true;}return edited;
+            }
+            p.primed=true;
         }
-        for(int ch=0;ch<channels;++ch){float value=p.outPosition<kFrame?p.current.audio[p.outPosition*channels+ch]:0.0f;samples[i*channels+ch]=static_cast<short>(std::clamp(static_cast<int>(std::lrint(value*32768.0f)),-32768,32767));}
-        if(p.outPosition<kFrame)++p.outPosition;
+        const float dryGain=static_cast<float>(p.fadeSamplesRemaining)/(kFrame-1);
+        for(int ch=0;ch<channels;++ch){
+            auto& sample=samples[i*channels+ch];
+            const float processed=p.current.audio[p.outPosition*channels+ch]*32768.0f;
+            const float value=processed+dryGain*(sample-processed);
+            sample=static_cast<short>(std::clamp(static_cast<int>(std::lrint(value)),-32768,32767));
+        }
+        if(p.fadeSamplesRemaining>0)--p.fadeSamplesRemaining;
+        ++p.outPosition;
+        edited=true;
     }
-    return true;
+    return edited;
 }
 }

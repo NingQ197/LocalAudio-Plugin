@@ -26,7 +26,7 @@ def main():
     header+='static const unsigned char kReleaseResourceKey[32]='+cb(key)+';\nstatic const unsigned char kReleaseLoaderHash[32]='+cb(digest(loader))+';\nstatic constexpr const char* kReleaseProtection="'+('encrypted' if a.encrypt else 'plain')+'";\nstatic const ReleaseAssetEntry kReleaseAssets[]={\n'+',\n'.join(rows)+'\n};\n'
     (out/'include/release_assets_manifest.h').write_text(header,encoding='utf-8')
     rows=[];runtime=[]
-    for name in ['ningq_denoise_ui.dll','sherpa-onnx-c-api.dll','onnxruntime.dll','onnxruntime_providers_shared.dll','gtcrn_simple.onnx']:
+    for name in ['ningq_denoise_ui.dll','sherpa-onnx-c-api.dll','onnxruntime.dll','onnxruntime_providers_shared.dll','gtcrn_simple.onnx','dpdfnet_baseline.onnx']:
         b=(a.runtime/name).read_bytes();(out/'denoise'/name).write_bytes(b);h=digest(b)
         rows.append('{L"'+name+'",'+cb(h)+'}');runtime.append(dict(path='denoise/'+name,storedSha256=h.hex(),protected=True))
     for f in (R/'third_party/licenses').glob('*.txt'):shutil.copyfile(f,out/'denoise'/f.name)

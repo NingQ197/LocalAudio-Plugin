@@ -24,7 +24,7 @@ void OpenMusicFromTutorial(){if(!ShowShareWindow())ShowConfigDialog();}
 std::wstring settingsFile;
 void ReadUi(int* model,int* strength){const auto s=GetDenoiseConfig();*model=s.model;*strength=s.strength;}
 int WriteUi(int model,int strength){
-    if(model<0||model>2||strength<0||strength>100)return 0;
+    if(model<0||model>3||strength<0||strength>100)return 0;
     if(!SaveDenoiseSettings(settingsFile,model,strength))return 0;
     return SetDenoiseConfig(model,strength)?1:0;
 }

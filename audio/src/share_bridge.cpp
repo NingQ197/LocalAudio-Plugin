@@ -89,7 +89,7 @@ void ShareBridgeHandleMessage(const std::string& text){
             ShareBridgeTick();
         }else if(type=="audioStop"){CaptureController::Get().Stop();ShareBridgeTick();}
         else if(type=="denoiseSave"){
-            const int model=Integer(message,"model",0,0,2),strength=Integer(message,"strength",70,0,100);
+            const int model=Integer(message,"model",0,0,3),strength=Integer(message,"strength",70,0,100);
             if(!SaveDenoiseSettings(ConfigPath(),model,strength)){Error("无法保存降噪设置");return;}
             if(!SetDenoiseConfig(model,strength))Error("降噪组件未就绪，设置已保存");ShareBridgeTick();
         }else Error("此版本不支持此操作");
