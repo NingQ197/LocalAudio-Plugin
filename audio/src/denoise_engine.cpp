@@ -18,6 +18,24 @@ namespace la {
 namespace {
 constexpr int kFrame=480, kMaxChannels=2;
 constexpr int kDpdfnetDelayBlocks = 4;
+constexpr int kRnnoiseDelayBlocks = 2;
+constexpr int kHistoryFrames = 8192;
+static_assert(kHistoryFrames > 12*kFrame+1);
+// Adjust the playback rate by at most 1/16 while moving to or from live audio.
+constexpr int kSamplePhase = 16;
+constexpr int kFadeFrames = kFrame;
+constexpr DWORD kCaptureGapMs = 200;
+
+int ModelDelayBlocks(int model) {
+    if (model == static_cast<int>(NoiseModel::Dpdfnet)) return kDpdfnetDelayBlocks;
+    if (model == static_cast<int>(NoiseModel::Rnnoise)) return kRnnoiseDelayBlocks;
+    return 0;
+}
+
+int PlaybackDelayFrames(int model) {
+    const int bufferBlocks = model == static_cast<int>(NoiseModel::Rnnoise) ? 5 : 8;
+    return (ModelDelayBlocks(model) + bufferBlocks) * kFrame;
+}
 struct Sherpa {
     HMODULE dll=nullptr;
 #define API(name) decltype(&name) name##Fn=nullptr
@@ -54,7 +72,7 @@ struct Channel {
     float amount=-1;
 };
 struct Packet {
-    uint64_t epoch=0;
+    uint64_t epoch=0, firstFrame=0;
     int model=0, channels=1, strength=70, slot=0;
     std::array<float,kFrame*kMaxChannels> audio{};
 };
@@ -64,19 +82,103 @@ template<size_t Capacity> struct Queue {
     alignas(64) std::atomic<size_t> tail{0};
     bool push(const Packet& p){const auto h=head.load(std::memory_order_relaxed);if(h-tail.load(std::memory_order_acquire)>=Capacity)return false;data[h%Capacity]=p;head.store(h+1,std::memory_order_release);return true;}
     bool pop(Packet& p){const auto t=tail.load(std::memory_order_relaxed);if(t==head.load(std::memory_order_acquire))return false;p=data[t%Capacity];tail.store(t+1,std::memory_order_release);return true;}
-    size_t size()const{return head.load(std::memory_order_acquire)-tail.load(std::memory_order_acquire);}
 };
+struct WetFrame {
+    uint64_t frame=0, epoch=0;
+    std::array<float,kMaxChannels> samples{};
+};
+
 struct CapturePort {
     Queue<16> output;
     std::atomic<uint64_t> handler{0},epoch{0};
     std::atomic<int> requestedChannels{1},loadedModel{0},loadedChannels{0};
-    uint64_t lastRevision=0;
-    DWORD lastUsed=0;
-    int inPosition=0,outPosition=kFrame;
-    int fadeSamplesRemaining=0;
-    unsigned misses=0;
-    bool bypassed=true,primed=false;
-    Packet pending,current;
+    std::array<std::array<short,kMaxChannels>,kHistoryFrames> dryHistory{};
+    std::array<WetFrame,kHistoryFrames> wetHistory{};
+    uint64_t captured=0, playback=0, wetEnd=0, lastRevision=0;
+    DWORD lastUsed=0, lastBlockMs=0;
+    int channels=0, inPosition=0, phase=0;
+    int wetMix=0, missingFrames=0;
+    bool feeding=false, renderedWet=false;
+    Packet pending;
+
+    void InvalidateInference() {
+        epoch.fetch_add(1);
+        inPosition=0;
+        wetEnd=0;
+        feeding=false;
+        renderedWet=false;
+        missingFrames=0;
+    }
+
+    void ResetCapture(int newChannels) {
+        InvalidateInference();
+        playback=captured;
+        phase=0;
+        wetMix=0;
+        channels=newChannels;
+    }
+
+    void CollectWet() {
+        Packet packet;
+        const auto currentEpoch=epoch.load();
+        while (output.pop(packet)) {
+            if (packet.epoch!=currentEpoch || packet.channels!=channels) continue;
+            for (int i=0; i<kFrame; ++i) {
+                const uint64_t frame=packet.firstFrame+i;
+                if (frame<playback) continue;
+                auto& entry=wetHistory[frame%kHistoryFrames];
+                entry.frame=frame;
+                entry.epoch=packet.epoch;
+                std::copy_n(packet.audio.data()+i*channels, channels, entry.samples.begin());
+            }
+            wetEnd=packet.firstFrame+kFrame;
+        }
+    }
+
+    bool Render(short* samples, int targetDelay) {
+        const uint64_t frame=playback;
+        const auto phaseWeight=static_cast<float>(phase)/kSamplePhase;
+        const auto& dry=dryHistory[frame%kHistoryFrames];
+        const auto& dryNext=dryHistory[std::min(frame+1,captured)%kHistoryFrames];
+        const auto& wet=wetHistory[frame%kHistoryFrames];
+        const auto& wetNext=wetHistory[(frame+1)%kHistoryFrames];
+        const bool hasWet=wet.epoch!=0 && wet.frame==frame &&
+            (phase==0 || (wetNext.frame==frame+1 && wetNext.epoch==wet.epoch));
+        const bool currentWet=feeding && hasWet && wet.epoch==epoch.load();
+        // Fade toward aligned dry audio before a depleted queue can run out.
+        const bool wetReady=currentWet && wetEnd>frame+kFadeFrames;
+        if (!hasWet) wetMix=0;
+        else if (wetReady) wetMix=std::min(kFadeFrames,wetMix+1);
+        else wetMix=std::max(0,wetMix-1);
+        if (currentWet && wetMix>0) renderedWet=true;
+        if (currentWet) missingFrames=0;
+        else if (feeding && renderedWet) ++missingFrames;
+
+        const bool edited=frame!=captured || phase!=0 || wetMix>0;
+        if (edited) {
+            const auto wetWeight=static_cast<float>(wetMix)/kFadeFrames;
+            for (int channel=0; channel<channels; ++channel) {
+                const float raw=dry[channel]+phaseWeight*(dryNext[channel]-dry[channel]);
+                float value=raw;
+                if (wetMix>0) {
+                    const float processed=phase==0 ? wet.samples[channel] :
+                        wet.samples[channel]+phaseWeight*(wetNext.samples[channel]-wet.samples[channel]);
+                    value+=wetWeight*(processed*32768.0f-raw);
+                }
+                samples[channel]=static_cast<short>(std::clamp(static_cast<int>(std::lrint(value)),-32768,32767));
+            }
+        }
+
+        // Both sources are read at the same position. Move it forward even
+        // when the worker is late, or the user disables or changes the model.
+        const int delay=static_cast<int>(captured-frame)*kSamplePhase-phase;
+        const int target=targetDelay*kSamplePhase;
+        const int step=kSamplePhase+std::clamp(delay-target,-1,1);
+        const int nextPhase=phase+step;
+        playback+=nextPhase/kSamplePhase;
+        phase=nextPhase%kSamplePhase;
+        return edited;
+    }
 };
 struct Controller {
     HANDLE wake=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -135,7 +237,7 @@ struct DenoiseStream::Impl {
     void destroy(){for(auto& ch:state){if(ch.rn){rnnoise_destroy(ch.rn);ch.rn=nullptr;}if(ch.sd){sherpa->SherpaOnnxDestroyOnlineSpeechDenoiserFn(ch.sd);ch.sd=nullptr;}if(ch.up){sherpa->SherpaOnnxDestroyLinearResamplerFn(ch.up);ch.up=nullptr;}}}
     ~Impl(){destroy();}
     void reset(){for(int i=0;i<channels;++i){auto& ch=state[i];ch.wet.clear();ch.dry.clear();ch.strength.clear();ch.amount=-1;
-        if(model==2){rnnoise_init(ch.rn,nullptr);ch.dry.insert(ch.dry.end(),960,0.0f);ch.strength.insert(ch.strength.end(),960,1.0f);}
+        if(model==2){rnnoise_init(ch.rn,nullptr);ch.dry.insert(ch.dry.end(),kRnnoiseDelayBlocks*kFrame,0.0f);ch.strength.insert(ch.strength.end(),kRnnoiseDelayBlocks*kFrame,1.0f);}
         // DPDFNet adds 30 ms internal causal lookahead on top of the 10 ms STFT startup hop
         // (40 ms = 1920 samples at 48 kHz; GetFrameShiftInSamples only reports the STFT hop).
         else if(model==3){sherpa->SherpaOnnxOnlineSpeechDenoiserResetFn(ch.sd);sherpa->SherpaOnnxLinearResamplerResetFn(ch.up);ch.dry.insert(ch.dry.end(),kDpdfnetDelayBlocks*kFrame,0.0f);ch.strength.insert(ch.strength.end(),kDpdfnetDelayBlocks*kFrame,1.0f);}
@@ -179,7 +281,7 @@ bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
     try{ptr->worker=std::thread([ptr]{
         struct Lane {
             std::unique_ptr<DenoiseStream> stream;
-            uint64_t epoch=0;
+            uint64_t epoch=0, nextFrame=0, expectedInput=0;
             int model=0,channels=0;
             std::array<float,kFrame*kMaxChannels> assembled{};
             size_t count=0;
@@ -202,12 +304,14 @@ bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
             auto& port=ptr->ports[in.slot];auto& lane=lanes[in.slot];
             if(in.epoch!=port.epoch.load()||in.model!=desired||in.channels!=lane.channels||in.model!=lane.model)continue;
             try{
-                if(in.epoch!=lane.epoch){
+                if(in.epoch!=lane.epoch || in.firstFrame!=lane.expectedInput){
                     lane.stream->Reset();
                     lane.epoch=in.epoch;
                     lane.count=0;
-                    lane.startupBlocks=in.model==static_cast<int>(NoiseModel::Dpdfnet)?kDpdfnetDelayBlocks:0;
+                    lane.nextFrame=in.firstFrame;
+                    lane.startupBlocks=ModelDelayBlocks(in.model);
                 }
+                lane.expectedInput=in.firstFrame+kFrame;
                 lane.stream->Feed(in.audio.data(),kFrame,in.strength/100.0f);
                 Packet out;out.epoch=in.epoch;out.model=in.model;out.channels=in.channels;out.slot=in.slot;
                 // Partial reads are retained until a complete TS capture block exists.
@@ -215,13 +319,17 @@ bool InitializeDenoise(const std::wstring& runtime,int model,int strength){
                     lane.count+=lane.stream->Read(lane.assembled.data()+lane.count*lane.channels,kFrame-lane.count);
                     if(lane.count<kFrame)break;
                     lane.count=0;
-                    // Keep the dry/wet alignment in the stream, but do not play
-                    // DPDFNet's leading delay while live microphone audio is available.
+                    // Model alignment prepends padding. Only emit blocks
+                    // that correspond to real captured frames.
                     if(lane.startupBlocks>0){
                         --lane.startupBlocks;
                         continue;
                     }
+                    out.firstFrame=lane.nextFrame;
+                    lane.nextFrame+=kFrame;
                     std::copy_n(lane.assembled.data(),kFrame*lane.channels,out.audio.data());
+                    // The callback may have reset this lane during inference.
+                    if(in.epoch!=port.epoch.load()) break;
                     if(!port.output.push(out)){ptr->overloads++;ptr->failure=true;break;}
                 }
             }catch(...){ptr->failure=true;lane.stream.reset();lane.model=0;port.loadedModel=0;}
@@ -252,57 +360,92 @@ bool DenoiseActive(){
     auto* c=control.get();
     return c&&!c->failure&&c->model.load(std::memory_order_acquire)!=0&&c->strength.load(std::memory_order_relaxed)!=0;
 }
-bool ProcessDenoise(uint64_t handler,short* samples,int frames,int channels){
-    auto* c=control.get();if(!c||!samples||frames<1||frames>8192||channels<1||channels>2)return false;
-    const int model=c->model.load(std::memory_order_acquire),strength=c->strength.load(std::memory_order_relaxed);
-    if(!handler)return false;
+bool ProcessDenoise(uint64_t handler, short* samples, int frames, int channels) {
+    auto* c=control.get();
+    if (!c || !handler || !samples || frames<1 || frames>8192 || channels<1 || channels>kMaxChannels) return false;
+    const int model=c->model.load(std::memory_order_acquire);
+    const int strength=c->strength.load(std::memory_order_relaxed);
+    const bool enabled=model!=0 && strength!=0 && !c->failure;
+    const DWORD now=GetTickCount();
     int slot=-1;
-    for(int i=0;i<4;++i)if(c->ports[i].handler.load()==handler){slot=i;break;}
-    if(slot<0){
-        for(int i=0;i<4;++i)if(c->ports[i].handler.load()==0){slot=i;break;}
-        if(slot<0){
-            const DWORD now=GetTickCount();
-            for(int i=0;i<4;++i)if(now-c->ports[i].lastUsed>2000){slot=i;break;}
-            // Additional simultaneous capture streams keep their original audio.
-            if(slot<0)return false;
+    for (int i=0; i<4; ++i) {
+        if (c->ports[i].handler.load()==handler) { slot=i; break; }
+    }
+    if (slot<0) {
+        if (!enabled) return false;
+        for (int i=0; i<4; ++i) {
+            if (c->ports[i].handler.load()==0) { slot=i; break; }
         }
-        auto& port=c->ports[slot];port.epoch.fetch_add(1);port.handler=handler;port.bypassed=true;
-    }
-    auto& p=c->ports[slot];p.lastUsed=GetTickCount();p.requestedChannels=channels;
-    if(model==0||strength==0||p.loadedModel!=model||p.loadedChannels!=channels||c->failure){p.bypassed=true;return false;}
-    const auto revision=c->revision.load(std::memory_order_acquire);
-    if(p.bypassed||revision!=p.lastRevision){
-        p.epoch.fetch_add(1);p.lastRevision=revision;p.inPosition=0;p.outPosition=kFrame;p.bypassed=false;p.primed=false;p.misses=0;
-        p.fadeSamplesRemaining=kFrame-1;
-        Packet stale;while(p.output.pop(stale)){}
-    }
-    bool edited=false;
-    for(int i=0;i<frames;++i){
-        for(int ch=0;ch<channels;++ch)p.pending.audio[p.inPosition*channels+ch]=samples[i*channels+ch]/32768.0f;
-        ++p.inPosition;
-        if(p.inPosition==kFrame){p.pending.epoch=p.epoch.load();p.pending.model=model;p.pending.channels=channels;p.pending.strength=strength;p.pending.slot=slot;if(!c->input.push(p.pending)){c->overloads++;c->failure=true;p.bypassed=true;return edited;}p.inPosition=0;SetEvent(c->wake);}
-        if(!p.primed&&p.output.size()<4)continue;
-        if(p.outPosition==kFrame){
-            while(p.output.pop(p.current)){if(p.current.epoch==p.epoch.load()&&p.current.channels==channels){p.outPosition=0;p.misses=0;break;}}
-            // Once streaming has started, a missed inference deadline must not
-            // turn microphone speech into silent blocks. Preserve the original
-            // remainder; repeated missed deadlines disable inference safely.
-            if(p.outPosition==kFrame){
-                if(!p.primed)continue;
-                c->overloads++;if(++p.misses>=3){c->failure=true;p.bypassed=true;}return edited;
+        if (slot<0) {
+            for (int i=0; i<4; ++i) {
+                if (now-c->ports[i].lastUsed>2000) { slot=i; break; }
             }
-            p.primed=true;
         }
-        const float dryGain=static_cast<float>(p.fadeSamplesRemaining)/(kFrame-1);
-        for(int ch=0;ch<channels;++ch){
-            auto& sample=samples[i*channels+ch];
-            const float processed=p.current.audio[p.outPosition*channels+ch]*32768.0f;
-            const float value=processed+dryGain*(sample-processed);
-            sample=static_cast<short>(std::clamp(static_cast<int>(std::lrint(value)),-32768,32767));
+        // Additional simultaneous capture streams keep their original audio.
+        if (slot<0) return false;
+        auto& port=c->ports[slot];
+        port.ResetCapture(channels);
+        port.lastUsed=now;
+        port.handler=handler;
+    }
+
+    auto& p=c->ports[slot];
+    if (p.channels!=channels || now-p.lastUsed>kCaptureGapMs+p.lastBlockMs) p.ResetCapture(channels);
+    p.lastUsed=now;
+    p.lastBlockMs=static_cast<DWORD>(frames/48);
+    p.requestedChannels=channels;
+
+    const auto revision=c->revision.load(std::memory_order_acquire);
+    const bool ready=enabled && p.loadedModel==model && p.loadedChannels==channels;
+    if (ready!=p.feeding || revision!=p.lastRevision) {
+        p.InvalidateInference();
+        p.feeding=ready;
+        p.lastRevision=revision;
+    }
+    p.CollectWet();
+    if (!enabled && p.playback==p.captured && p.phase==0 && p.wetMix==0) {
+        p.playback+=frames;
+        p.captured+=frames;
+        return false;
+    }
+
+    int targetDelay=enabled ? PlaybackDelayFrames(model) : 0;
+    bool edited=false;
+    for (int i=0; i<frames; ++i) {
+        auto* input=samples+i*channels;
+        auto& saved=p.dryHistory[p.captured%kHistoryFrames];
+        std::copy_n(input,channels,saved.begin());
+        if (p.feeding) {
+            if (p.inPosition==0) p.pending.firstFrame=p.captured;
+            for (int channel=0; channel<channels; ++channel) {
+                p.pending.audio[p.inPosition*channels+channel]=saved[channel]/32768.0f;
+            }
+            if (++p.inPosition==kFrame) {
+                p.inPosition=0;
+                p.pending.epoch=p.epoch.load();
+                p.pending.model=model;
+                p.pending.channels=channels;
+                p.pending.strength=strength;
+                p.pending.slot=slot;
+                if (c->input.push(p.pending)) SetEvent(c->wake);
+                else {
+                    c->overloads++;
+                    c->failure=true;
+                    p.InvalidateInference();
+                    targetDelay=0;
+                }
+                p.CollectWet();
+            }
         }
-        if(p.fadeSamplesRemaining>0)--p.fadeSamplesRemaining;
-        ++p.outPosition;
-        edited=true;
+
+        edited=p.Render(input,targetDelay) || edited;
+        ++p.captured;
+        if (p.missingFrames>=3*kFrame) {
+            c->overloads++;
+            c->failure=true;
+            p.InvalidateInference();
+            targetDelay=0;
+        }
     }
     return edited;
 }
