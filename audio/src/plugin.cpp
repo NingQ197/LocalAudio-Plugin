@@ -94,7 +94,7 @@ const char* ts3plugin_author()
 
 const char* ts3plugin_description()
 {
-    static std::string desc = Utf8(L"在 TeamSpeak 客户端内共享本地应用声音；支持 GTCRN / RNNoise 麦克风降噪。Design by ningq。");
+    static std::string desc = Utf8(L"在 TeamSpeak 客户端内共享本地应用声音；支持 DPDFNet / GTCRN / RNNoise 麦克风降噪。Design by ningq。");
     return desc.c_str();
 }
 
@@ -332,10 +332,9 @@ void ts3plugin_onEditCapturedVoiceDataEvent(uint64 serverConnectionHandlerID, sh
     AudioCallbackGuard callbackGuard;
     if(g_pluginStopping.load(std::memory_order_acquire))return;
     const bool mixing = la::State().mixing.load(std::memory_order_relaxed);
-    if (!mixing && !la::DenoiseActive())return;
 
     /* 先处理人声，再混音乐：顺序反了会把歌当成噪声一起去噪。
-       降噪关闭时 ProcessDenoise 不碰 samples，直接返回 false。 */
+       关闭降噪后仍需完成原声到实时直通的过渡。 */
     if (la::ProcessDenoise(serverConnectionHandlerID, samples, sampleCount, channels))
         *edited |= 1;
 
