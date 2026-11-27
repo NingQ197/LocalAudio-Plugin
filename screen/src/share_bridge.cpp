@@ -364,7 +364,7 @@ Json Bootstrap() {
             if(c.api.freeMemory)c.api.freeMemory(ids);
         }
     }
-    return {{"type","bootstrap"},{"version","2.5.4"},{"protocolMajor",2},{"connected",c.connected},{"selfID",c.self},{"handler",c.handler},{"channelID",c.channel},
+    return {{"type","bootstrap"},{"version","2.5.5"},{"protocolMajor",2},{"connected",c.connected},{"selfID",c.self},{"handler",c.handler},{"channelID",c.channel},
       {"peers",peers},{"audioSettings",AudioSettings()},{"networkConfig",EffectiveNetwork()}};
 }
 bool TakeBudget(Budget& budget,size_t bytes,size_t packets,size_t maxBytes) {
