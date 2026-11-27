@@ -1,0 +1,195 @@
+name: Build LocalAudio v2.5.5 installers
+on:
+  push:
+    branches: [release/v2.5.5-build]
+    paths: [.github/workflows/build-v2.5.5.yml]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: f80411d7af38d82d8cf1653b9c3d04c0c295963e
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Run packaging tests and fetch locked dependencies
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-build.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/fetch_dependencies.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Prepare LLVM-MinGW, NSIS, and pinned Microsoft redistributables
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'local-audio-build'
+          New-Item -ItemType Directory $root | Out-Null
+          "BUILD_TOOLS=$root" >> $env:GITHUB_ENV
+          function Get-LockedFile([string]$url, [string]$name, [string]$sha) {
+            $path = Join-Path $root $name
+            curl.exe -fLsS --retry 3 --max-time 240 $url -o $path
+            if ($LASTEXITCODE -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $sha) {
+              throw "Download or SHA256 verification failed: $name"
+            }
+            return $path
+          }
+          $llvm = Get-LockedFile 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-x86_64.zip' 'llvm.zip' 'e3ad77d117a4bea19a7a3b333341824d79a5a371004a10e25b8504e7b3047666'
+          $nsis = Get-LockedFile 'https://sourceforge.net/projects/nsis/files/NSIS%203/3.13/nsis-3.13.zip/download' 'nsis.zip' 'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8'
+          Expand-Archive -LiteralPath $llvm -DestinationPath $root
+          Expand-Archive -LiteralPath $nsis -DestinationPath $root
+          "$root\llvm-mingw-20260922-ucrt-x86_64\bin" >> $env:GITHUB_PATH
+          # Retrieve only the two Microsoft payloads with the exact hashes required by build_installer.py.
+          $reference = Get-LockedFile 'https://github.com/NingQ197/LocalAudio-Plugin/releases/download/v2.5.4/LocalAudio-Audio.exe' 'reference.exe' 'b993b3df0af9e38109b252d91cd4dfcdf20f195f2eee69fffb15341f89b3d87f'
+          $seven = "$env:ProgramFiles\7-Zip\7z.exe"
+          & $seven x -y "-o$root" $reference '$PLUGINSDIR/webview2.exe' '$PLUGINSDIR/vc_redist.x64.exe'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($payload in @{'webview2.exe'='9b0142e22e8daa92855d746ae4d1e9eeef561ccaf67d1dd452165c4af3df3191'; 'vc_redist.x64.exe'='843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c'}.GetEnumerator()) {
+            $file = Join-Path (Join-Path $root '$PLUGINSDIR') $payload.Key
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $payload.Value) {
+              throw "Microsoft payload hash mismatch: $($payload.Key)"
+            }
+          }
+      - name: Build Qt 5.15.2 MSVC bridge
+        shell: pwsh
+        run: |
+          python -m pip install aqtinstall==3.3.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m aqt install-qt windows desktop 5.15.2 win64_msvc2019_64 --outputdir "$env:BUILD_TOOLS\qt"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake -S native-ui -B build/native-ui -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_PREFIX_PATH=$env:BUILD_TOOLS\qt\5.15.2\msvc2019_64"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build build/native-ui --config Release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/native-ui/Release/ningq_denoise_ui.dll deps/runtime/
+      - name: Build both independent installers
+        shell: pwsh
+        run: |
+          $root = $env:BUILD_TOOLS
+          $payloads = Join-Path $root '$PLUGINSDIR'
+          New-Item -ItemType Directory dist | Out-Null
+          foreach ($edition in @('audio', 'screen')) {
+            $bundle = Join-Path $PWD "build\bundle-$edition"
+            $label = if ($edition -eq 'audio') { 'Audio' } else { 'Screen' }
+            python tools/prepare_resources.py $edition --runtime deps/runtime --output $bundle --encrypt
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            cmake -S . -B "build/$edition" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=x86_64-w64-mingw32-clang -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-clang++ "-DLA_EDITION=$edition" "-DLA_RESOURCE_BUNDLE=$bundle"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            cmake --build "build/$edition" --parallel 2
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            python tools/build_installer.py --edition $edition --bundle $bundle --dll "build/$edition/ts3localaudio.dll" --helper "build/$edition/client-check.exe" --webview-installer "$payloads\webview2.exe" --vc-installer "$payloads\vc_redist.x64.exe" --makensis "$root\nsis-3.13\makensis.exe" --output "dist/LocalAudio-$label.exe"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+      - name: Check NSIS CRC, extracted contents, DPDFNet and x64 payloads
+        shell: pwsh
+        run: |
+          $seven = "$env:ProgramFiles\7-Zip\7z.exe"
+          foreach ($label in @('Audio', 'Screen')) {
+            $file = "dist/LocalAudio-$label.exe"
+            if ((Get-Item $file).VersionInfo.FileVersion -ne '2.5.5') { throw 'Unexpected installer version' }
+            & $seven t $file
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            & $seven x -y "-obuild/verify-$label" $file
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          @'
+          import hashlib, mmap, struct, zlib
+          from pathlib import Path
+
+          def sha(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+          def check_x64(path):
+              with path.open('rb') as stream:
+                  assert stream.read(2) == b'MZ', path
+                  stream.seek(0x3c)
+                  stream.seek(struct.unpack('<I', stream.read(4))[0])
+                  assert stream.read(6) == b'PE\0\0\x64\x86', path
+
+          def files(root):
+              return {p.relative_to(root).as_posix(): sha(p) for p in root.rglob('*') if p.is_file()}
+
+          def check_crc(path):
+              with path.open('rb') as raw, mmap.mmap(raw.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                  magic = bytes.fromhex('EFBEADDE4E756C6C736F6674496E7374')
+                  header = next(i for i in range(512, len(mm), 512) if mm[i+4:i+20] == magic)
+                  flags, _, _, _, _, _, size = struct.unpack_from('<7I', mm, header)
+                  end = header + size - 4
+                  assert flags & 8 and end + 4 == len(mm)
+                  assert zlib.crc32(mm[512:end]) == struct.unpack_from('<I', mm, end)[0]
+
+          sums = []
+          for edition, label in [('audio', 'Audio'), ('screen', 'Screen')]:
+              exe = Path(f'dist/LocalAudio-{label}.exe')
+              check_crc(exe)
+              unpacked = Path(f'build/verify-{label}')
+              stage = Path(f'build/installer-{edition}/package/plugins')
+              plug, = unpacked.rglob('ts3localaudio.dll')
+              installed = plug.parent
+              expected = files(stage)
+              actual = files(installed)
+              if installed == unpacked:
+                  actual = {p: h for p, h in actual.items() if not p.startswith('$PLUGINSDIR/')}
+              actual.pop('uninstall.exe', None)
+              assert actual == expected, (sorted(actual.keys() ^ expected.keys()), sorted(k for k in actual.keys() & expected.keys() if actual[k] != expected[k]))
+              assert actual['ts3localaudio/denoise/dpdfnet_baseline.onnx'] == 'debaf0e8893479fca91b8b4c1eae8db195aa8980ccc9012f5809fde2b738151a'
+              for area in ('denoise', 'licenses'):
+                  assert actual[f'ts3localaudio/{area}/DPDFNet-Apache-2.0.txt'] == sha(Path('third_party/licenses/DPDFNet-Apache-2.0.txt'))
+              assert sha(unpacked / '$PLUGINSDIR/client-check.exe') == sha(Path(f'build/{edition}/client-check.exe'))
+              for relative, digest in [
+                  ('webview2.exe', '9b0142e22e8daa92855d746ae4d1e9eeef561ccaf67d1dd452165c4af3df3191'),
+                  ('vc_redist.x64.exe', '843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c'),
+              ]:
+                  assert sha(unpacked / '$PLUGINSDIR' / relative) == digest
+              for binary in [plug, unpacked/'$PLUGINSDIR/client-check.exe', *installed.glob('ts3localaudio/**/*.dll')]:
+                  check_x64(binary)
+              assert ('ts3localaudio/ui/rtc.js.enc' in actual) == (edition == 'screen')
+              for path, digest in sorted(actual.items()):
+                  print(f'{label} {digest} {path}')
+              sums.append(f'{sha(exe)}  {exe.name}')
+              print(f'{label}: NSIS CRC and {len(actual)} plugin files verified')
+          Path('dist/SHA256SUMS.txt').write_text('\n'.join(sums) + '\n', encoding='ascii', newline='\n')
+          print('\n'.join(sums))
+          '@ | python -
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Smoke-test installer with official TeamSpeak client files
+        id: smoke
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $root = $env:BUILD_TOOLS
+          $setup = "$root\TeamSpeak3-Client-win64-3.6.2.exe"
+          curl.exe -fLsS --retry 2 --max-time 120 'https://files.teamspeak-services.com/releases/client/3.6.2/TeamSpeak3-Client-win64-3.6.2.exe' -o $setup
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $signature = Get-AuthenticodeSignature $setup
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'TeamSpeak') { throw 'TeamSpeak publisher signature validation failed' }
+          $seven = "$env:ProgramFiles\7-Zip\7z.exe"
+          & $seven x -y "-o$root\teamspeak-files" $setup
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $client = @(Get-ChildItem "$root\teamspeak-files" -Recurse -Filter 'ts3client_win64.exe')
+          if ($client.Count -ne 1) { throw 'Official client executable not found' }
+          foreach ($label in @('Audio', 'Screen')) {
+            $profile = "$root\profile-$label"
+            $installer = (Resolve-Path "dist/LocalAudio-$label.exe").Path
+            $p = Start-Process -FilePath $installer -ArgumentList "/S /CLIENT=$($client[0].DirectoryName) /D=$profile" -PassThru
+            if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; throw "$label installer timed out" }
+            if ($p.ExitCode -ne 0) { throw "$label installer failed with $($p.ExitCode)" }
+            $dll = "$profile\plugins\ts3localaudio.dll"
+            $built = "build/$($label.ToLowerInvariant())/ts3localaudio.dll"
+            if ((Get-FileHash $dll).Hash -ne (Get-FileHash $built).Hash) { throw "$label installed DLL hash mismatch" }
+            Write-Host "$label installed via the real installer, using an isolated profile"
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: LocalAudio-v2.5.5-Windows-x64
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
